@@ -1,0 +1,328 @@
+================================================================================
+                          SUPABASE SYSTEM MAP
+================================================================================
+
+                              SCHEMA OVERVIEW
+================================================================================
+
+    ┌───────────────────────────────────────────────────────────────────────┐
+    │                          transcripts2                                 │
+    │                                                                       │
+    │   Primary table for transcript sessions                               │
+    │   CRITICAL: Chunks stored in transcript_chunk jsonb[] — NO separate   │
+    │             transcript_chunks table exists!                           │
+    │                                                                       │
+    │   ┌─────────────────────────────────────────────────────────────────┐│
+    │   │  id                   BIGINT      PK, auto-generated (IDENTITY) ││
+    │   │  user_id              UUID        NOT NULL, clinician ID        ││
+    │   │  created_at           TIMESTAMPTZ DEFAULT now()                 ││
+    │   │  completed_at         TIMESTAMPTZ nullable, session end         ││
+    │   │  processed_at         TIMESTAMPTZ AI processing completed       ││
+    │   │  queued_at            TIMESTAMPTZ queued for processing         ││
+    │   │  queued_completed_at  TIMESTAMPTZ queue processing done         ││
+    │   │  mid                  UUID        UNIQUE message ID             ││
+    │   │  ai_summary           JSONB       final AI summary              ││
+    │   │  ai_short_summary     JSONB       condensed summary             ││
+    │   │  ai_interim_summaries JSONB[]     incremental summaries         ││
+    │   │  token_count          INT4        token metrics                 ││
+    │   │  transcript           TEXT        full flattened text           ││
+    │   │  transcript_chunk     JSONB[]     diarized chunks array         ││
+    │   │  patient_tag          INT         DEFAULT 0                     ││
+    │   │  patient_code         TEXT        AssistMD encounter ID         ││
+    │   │  patient_uuid         UUID        FK to EMR patient             ││
+    │   │  current_audio_segment INT        processing state              ││
+    │   │  is_paused            BOOL        recording paused              ││
+    │   │  error                TEXT        error message if failed       ││
+    │   │  language             TEXT        'en', 'es', etc.              ││
+    │   │  pii_mapping          BYTEA       encrypted PII map             ││
+    │   └─────────────────────────────────────────────────────────────────┘│
+    │                                                                       │
+    │   Indexes:                                                            │
+    │   - idx_transcripts2_user_id (user_id)                               │
+    │   - idx_transcripts2_created_at (created_at DESC)                    │
+    │   - idx_transcripts2_mid (mid)                                       │
+    │   - idx_transcripts2_patient_uuid (patient_uuid) WHERE NOT NULL      │
+    │                                                                       │
+    └───────────────────────────────────────────────────────────────────────┘
+
+
+================================================================================
+                            CHUNK STRUCTURE
+================================================================================
+
+    transcript_chunk jsonb[] — Each element:
+    ────────────────────────────────────────
+
+    {
+      "speaker": 0,                    // Deepgram speaker ID (0-49)
+      "text": "Hello, how are you?",   // Joined punctuated words
+      "start": 0.0,                    // Chunk start time (seconds)
+      "end": 2.5,                      // Chunk end time (seconds)
+      "word_count": 4,                 // Number of words
+      "raw": [                         // Original Deepgram words
+        {
+          "word": "Hello",
+          "start": 0.0,
+          "end": 0.4,
+          "confidence": 0.99,
+          "speaker": 0
+        },
+        {
+          "word": "how",
+          "start": 0.5,
+          "end": 0.7,
+          "confidence": 0.97,
+          "speaker": 0
+        }
+      ]
+    }
+
+
+    Chunk Aggregation Rules:
+    ────────────────────────
+
+    Start new chunk when:
+    1. Speaker changes: newWord.speaker !== chunk.speaker
+    2. Duration > 30s:  (currentWord.end - chunk.start) > 30
+    3. Utterance end:   Deepgram utterance_end event
+
+
+================================================================================
+                           DATA FLOW PATTERNS
+================================================================================
+
+    CREATE SESSION
+    ──────────────
+
+    WebSocket Connect → Start Recording
+          │
+          ▼
+    ┌─────────────────────────────────────────────────────────────────────┐
+    │                                                                     │
+    │   INSERT INTO transcripts2 (                                       │
+    │     user_id, patient_code, patient_uuid, language,                 │
+    │     transcript_chunk, ai_interim_summaries                         │
+    │   )                                                                 │
+    │   VALUES ($1, $2, $3, 'en', ARRAY[]::jsonb[], ARRAY[]::jsonb[])   │
+    │   RETURNING id;                                                     │
+    │                                                                     │
+    └───────────────────────────────────────┬─────────────────────────────┘
+                                            │
+                                            ▼
+                                    Return BIGINT id to agent
+
+
+    SAVE CHUNKS (Append to Array)
+    ─────────────────────────────
+
+    Deepgram Final Result → Chunk Aggregator
+          │
+          ▼
+    ┌─────────────────────────────────────────────────────────────────────┐
+    │                                                                     │
+    │   -- 1. Fetch existing chunks                                      │
+    │   SELECT transcript_chunk                                          │
+    │   FROM transcripts2                                                │
+    │   WHERE id = $1;                                                   │
+    │                                                                     │
+    │   -- 2. Append new chunks and rebuild transcript                   │
+    │   UPDATE transcripts2                                              │
+    │   SET transcript_chunk = $existing || $newChunks,                  │
+    │       transcript = $rebuiltFullText                                │
+    │   WHERE id = $1;                                                   │
+    │                                                                     │
+    └─────────────────────────────────────────────────────────────────────┘
+
+
+    END SESSION
+    ───────────
+
+    WebSocket Close → Stop Recording
+          │
+          ▼
+    ┌─────────────────────────────────────────────────────────────────────┐
+    │                                                                     │
+    │   UPDATE transcripts2                                              │
+    │   SET completed_at = NOW()                                         │
+    │   WHERE id = $1;                                                   │
+    │                                                                     │
+    └─────────────────────────────────────────────────────────────────────┘
+
+
+    GET FULL TRANSCRIPT
+    ───────────────────
+
+    User Request
+          │
+          ▼
+    ┌─────────────────────────────────────────────────────────────────────┐
+    │                                                                     │
+    │   SELECT transcript                                                │
+    │   FROM transcripts2                                                │
+    │   WHERE id = $1;                                                   │
+    │                                                                     │
+    │   -- OR reconstruct from chunks:                                   │
+    │   SELECT transcript_chunk                                          │
+    │   FROM transcripts2                                                │
+    │   WHERE id = $1;                                                   │
+    │                                                                     │
+    │   -- Format: "[Speaker 0]: text\n[Speaker 1]: text\n..."          │
+    │                                                                     │
+    └─────────────────────────────────────────────────────────────────────┘
+
+
+    GET CHUNKS
+    ──────────
+
+    ┌─────────────────────────────────────────────────────────────────────┐
+    │                                                                     │
+    │   SELECT transcript_chunk                                          │
+    │   FROM transcripts2                                                │
+    │   WHERE id = $1;                                                   │
+    │                                                                     │
+    │   -- Returns jsonb[] array of chunk objects                        │
+    │                                                                     │
+    └─────────────────────────────────────────────────────────────────────┘
+
+
+================================================================================
+                          ROW LEVEL SECURITY
+================================================================================
+
+    ┌─────────────────────────────────────────────────────────────────────┐
+    │                      RLS Policies                                   │
+    │                                                                     │
+    │   -- Enable RLS                                                    │
+    │   ALTER TABLE transcripts2 ENABLE ROW LEVEL SECURITY;              │
+    │                                                                     │
+    │   -- User can only access own transcripts                          │
+    │   CREATE POLICY user_access ON transcripts2                        │
+    │     FOR ALL                                                         │
+    │     USING (user_id = auth.uid());                                  │
+    │                                                                     │
+    │   -- Service role bypasses RLS                                     │
+    │   -- (backend uses SUPABASE_SERVICE_ROLE_KEY)                      │
+    │                                                                     │
+    └─────────────────────────────────────────────────────────────────────┘
+
+
+    NO SEPARATE CHUNKS TABLE
+    ────────────────────────
+
+    Unlike legacy designs, there is NO transcript_chunks table.
+    All chunks are stored in the transcript_chunk jsonb[] array
+    within the transcripts2 table.
+
+
+================================================================================
+                            CONNECTION PATTERN
+================================================================================
+
+    Backend Server
+          │
+          ▼
+    ┌─────────────────────────────────────────────────────────────────────┐
+    │                                                                     │
+    │   import { createClient } from '@supabase/supabase-js';            │
+    │                                                                     │
+    │   const supabase = createClient(                                   │
+    │     process.env.SUPABASE_URL,                                      │
+    │     process.env.SUPABASE_SERVICE_ROLE_KEY  // Server-side only!    │
+    │   );                                                                │
+    │                                                                     │
+    │   // Service role key gives full access (bypasses RLS)             │
+    │   // NEVER expose in extension/client code                         │
+    │                                                                     │
+    └─────────────────────────────────────────────────────────────────────┘
+
+
+    SECURITY WARNING
+    ────────────────
+
+    NEVER put service_role key in:
+    - Chrome extension code
+    - Client-side JavaScript
+    - Git repositories
+    - Public logs
+
+    ALWAYS:
+    - Store in .env file
+    - Use environment variables
+    - Backend server only
+
+
+================================================================================
+                         QUERY EXAMPLES
+================================================================================
+
+    Paginated History Query:
+    ────────────────────────
+
+    SELECT id, user_id, patient_code, created_at, completed_at
+    FROM transcripts2
+    WHERE user_id = $1
+      AND completed_at IS NOT NULL
+    ORDER BY created_at DESC
+    LIMIT 20
+    OFFSET $2;
+
+
+    Chunk Count Query:
+    ──────────────────
+
+    SELECT jsonb_array_length(transcript_chunk) as chunk_count
+    FROM transcripts2
+    WHERE id = $1;
+
+
+    Speaker Summary Query:
+    ──────────────────────
+
+    SELECT
+      chunk->>'speaker' as speaker,
+      COUNT(*) as chunk_count,
+      SUM(LENGTH(chunk->>'text')) as total_chars
+    FROM transcripts2,
+         unnest(transcript_chunk) as chunk
+    WHERE id = $1
+    GROUP BY chunk->>'speaker';
+
+
+    Latest Transcript Profile:
+    ──────────────────────────
+
+    SELECT id, patient_code, patient_uuid, created_at
+    FROM transcripts2
+    WHERE user_id = $1
+    ORDER BY created_at DESC
+    LIMIT 1;
+
+
+================================================================================
+                         KEY FIELD NOTES
+================================================================================
+
+    patient_code:
+    - AssistMD internal encounter ID (e.g., "ENC-2024-001")
+    - Set when session starts or via updatePatientInfo()
+
+    patient_uuid:
+    - Links to external EMR patient record
+    - Optional, may be NULL
+
+    transcript:
+    - Full flattened text for search/display
+    - Format: "[Speaker 0]: text\n[Speaker 1]: text\n..."
+    - Rebuilt on each chunk save
+
+    transcript_chunk:
+    - JSONB array of chunk objects
+    - Primary source of truth for diarized data
+    - Append-only during recording
+
+    ai_interim_summaries:
+    - JSONB array of incremental AI summaries
+    - Generated during long recordings
+    - Helps with real-time insights
+
+================================================================================

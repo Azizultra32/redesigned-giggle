@@ -1,0 +1,203 @@
+================================================================================
+                    GHOST-NEXT FULL SYSTEM MAP
+================================================================================
+
+                         SYSTEM OVERVIEW
+================================================================================
+
+    ┌─────────────────────────────────────────────────────────────────────────┐
+    │                        GHOST-NEXT STACK                                 │
+    │                                                                         │
+    │   Chrome Extension (Ferrari Overlay)                                    │
+    │         │                                                               │
+    │         │ WebSocket (/ws)                                              │
+    │         ▼                                                               │
+    │   Backend Server (Node.js/Express)                                     │
+    │         │                                                               │
+    │         ├──► Deepgram (nova-2 streaming)                               │
+    │         │                                                               │
+    │         └──► Supabase (transcripts2 table)                             │
+    │                                                                         │
+    └─────────────────────────────────────────────────────────────────────────┘
+
+
+================================================================================
+                         DATA FLOW
+================================================================================
+
+    ┌──────────┐     PCM 16kHz      ┌──────────┐     Audio     ┌──────────┐
+    │  Browser │ ─────────────────► │  Backend │ ────────────► │ Deepgram │
+    │   Mic    │   WebSocket /ws    │  Server  │   Streaming   │  nova-2  │
+    └──────────┘                    └──────────┘               └──────────┘
+                                         │                          │
+                                         │                          │
+                                         │ ◄────────────────────────┘
+                                         │    Transcript Events
+                                         │
+                                         ▼
+                                   ┌──────────┐
+                                   │ Chunk    │
+                                   │Aggregator│
+                                   └──────────┘
+                                         │
+                       ┌─────────────────┴─────────────────┐
+                       │                                   │
+                       ▼                                   ▼
+                 ┌──────────┐                       ┌──────────┐
+                 │ Extension │◄── JSON transcript   │ Supabase │
+                 │  Overlay  │                      │ Storage  │
+                 └──────────┘                       └──────────┘
+
+
+================================================================================
+                      EXTENSION ARCHITECTURE
+================================================================================
+
+    extension/
+    ├── manifest.json        MV3 manifest
+    ├── content.js           Content script (Shadow DOM overlay)
+    ├── overlay.js           Overlay UI module
+    ├── background.js        Service worker
+    ├── assets/              Icons
+    └── styles/              CSS (if separated)
+
+    Content Script Flow:
+    ────────────────────
+
+    1. Inject Shadow DOM container
+    2. Create Ferrari overlay UI
+    3. Connect WebSocket to backend
+    4. On record click:
+       - Request mic permission
+       - Create AudioContext (16kHz)
+       - Stream PCM via WebSocket
+    5. Receive transcript events
+    6. Update overlay display
+    7. On stop:
+       - Close AudioContext
+       - Signal backend to finish
+
+
+================================================================================
+                       BACKEND ARCHITECTURE
+================================================================================
+
+    backend/
+    ├── server.ts            Express + WebSocket setup
+    ├── supabase/
+    │   ├── client.ts        Supabase client singleton
+    │   └── queries.ts       Database operations
+    ├── audio/
+    │   └── deepgram-consumer.ts   Deepgram streaming
+    ├── ws/
+    │   └── broker.ts        WebSocket session manager
+    └── utils/
+        ├── diarization.ts   Chunk aggregation
+        ├── patient.ts       Patient info handling
+        └── dom.ts           DOM utilities
+
+    Server Endpoints:
+    ─────────────────
+
+    WebSocket /ws          Main command/audio channel
+    GET /health            Health check
+    GET /demo/patient      Generate demo patient code
+    POST /demo/patient/validate  Validate patient code
+    GET /stats             Server statistics
+
+
+================================================================================
+                       SUPABASE SCHEMA
+================================================================================
+
+    Table: transcripts2
+    ────────────────────
+
+    id                   BIGINT        PK (auto-generated)
+    user_id              UUID          NOT NULL
+    created_at           TIMESTAMPTZ   DEFAULT now()
+    completed_at         TIMESTAMPTZ   NULL (set when done)
+    mid                  UUID          UNIQUE message ID
+    transcript           TEXT          Full flattened text
+    transcript_chunk     JSONB[]       Diarized chunks array
+    patient_code         TEXT          AssistMD encounter ID
+    patient_uuid         UUID          EMR patient reference
+    ai_summary           JSONB         Final AI summary
+    ai_interim_summaries JSONB[]       Incremental summaries
+    token_count          INT4          Token metrics
+    language             TEXT          'en'
+
+
+    Chunk Format (transcript_chunk[]):
+    ───────────────────────────────────
+
+    {
+      "speaker": 0,           // 0 = Provider, 1+ = Patient
+      "text": "Hello...",     // Punctuated text
+      "start": 0.0,           // Start time (seconds)
+      "end": 2.5,             // End time (seconds)
+      "word_count": 4,        // Word count
+      "raw": [...]            // Original Deepgram words
+    }
+
+
+================================================================================
+                       WEBSOCKET PROTOCOL
+================================================================================
+
+    Client → Server Messages:
+    ─────────────────────────
+
+    { type: "start_recording", patientCode?: string, patientUuid?: string }
+    { type: "stop_recording" }
+    { type: "set_patient", patientCode: string, patientUuid?: string }
+    { type: "ping" }
+    [Binary: PCM audio data]
+
+
+    Server → Client Messages:
+    ─────────────────────────
+
+    { type: "connected", userId: string }
+    { type: "recording_started", transcriptId: number }
+    { type: "recording_stopped", transcriptId: number }
+    { type: "transcript", text: string, speaker: number, isFinal: boolean }
+    { type: "chunk", speaker: number, text: string, wordCount: number }
+    { type: "pong", timestamp: number }
+    { type: "error", error: string }
+
+
+================================================================================
+                       DIARIZATION RULES
+================================================================================
+
+    Chunk Aggregation:
+    ──────────────────
+
+    Start new chunk when:
+    1. Speaker changes:     word.speaker !== chunk.speaker
+    2. Duration > 30s:      (word.end - chunk.start) > 30
+    3. Utterance end:       Deepgram utterance_end event
+
+    Speaker Assignment:
+    ──────────────────
+
+    Speaker 0 = Provider (clinician)
+    Speaker 1 = Patient
+    Speaker N = Additional participants
+
+
+================================================================================
+                       ENVIRONMENT VARIABLES
+================================================================================
+
+    Backend (.env):
+    ───────────────
+
+    PORT=3001
+    DEEPGRAM_API_KEY=xxxxx
+    SUPABASE_URL=https://xxx.supabase.co
+    SUPABASE_SERVICE_ROLE_KEY=xxxxx
+
+
+================================================================================

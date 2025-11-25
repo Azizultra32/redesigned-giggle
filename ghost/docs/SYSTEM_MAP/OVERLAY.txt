@@ -1,0 +1,277 @@
+================================================================================
+                         FERRARI OVERLAY SYSTEM MAP
+================================================================================
+
+                              INJECTION FLOW
+================================================================================
+
+    Chrome Extension Load
+           │
+           ▼
+    ┌──────────────────┐
+    │  manifest.json   │
+    │  content_scripts │
+    │  matches: <all>  │
+    └────────┬─────────┘
+             │
+             ▼
+    ┌──────────────────┐       ┌──────────────────┐
+    │   content.ts     │──────▶│  background.ts   │
+    │  (entry point)   │       │ (service worker) │
+    └────────┬─────────┘       └──────────────────┘
+             │
+             ▼
+    ┌──────────────────┐
+    │   overlay.ts     │
+    │  (Ferrari UI)    │
+    │  Shadow DOM      │
+    └────────┬─────────┘
+             │
+    ┌────────┴────────────────────────────────────┐
+    │                                             │
+    ▼                 ▼                 ▼         ▼
+┌─────────┐   ┌─────────────┐   ┌─────────┐   ┌─────────┐
+│ tabs.ts │   │transcript.ts│   │buttons.ts│   │pills.ts │
+└─────────┘   └─────────────┘   └─────────┘   └─────────┘
+
+
+================================================================================
+                            SHADOW DOM STRUCTURE
+================================================================================
+
+    document.body
+        │
+        └── #ghost-next-overlay (host element)
+                │
+                └── [Shadow Root]
+                        │
+                        ├── <style> (scoped CSS)
+                        │
+                        └── .ferrari-overlay
+                                │
+                                ├── .overlay-header
+                                │       ├── .overlay-title (logo + name)
+                                │       ├── #status-pills
+                                │       │       ├── .connection-pill
+                                │       │       ├── .recording-pill
+                                │       │       └── .patient-pill
+                                │       └── .header-controls
+                                │               └── .minimize-btn
+                                │
+                                ├── .overlay-tabs (#tabs-container)
+                                │       ├── .tab-button[data-tab="transcript"]
+                                │       ├── .tab-button[data-tab="mapping"]
+                                │       └── .tab-button[data-tab="settings"]
+                                │
+                                ├── .overlay-content
+                                │       ├── #transcript-panel
+                                │       │       └── .transcript-lines
+                                │       │               └── .speaker-group[]
+                                │       │                       ├── .speaker-header
+                                │       │                       │       ├── .speaker-badge
+                                │       │                       │       └── .timestamp
+                                │       │                       └── .transcript-line[]
+                                │       │
+                                │       ├── #mapping-panel (hidden)
+                                │       │       └── [field list]
+                                │       │
+                                │       └── #settings-panel (hidden)
+                                │               └── [settings form]
+                                │
+                                └── .overlay-footer (#control-buttons)
+                                        ├── .record-btn / .stop-btn
+                                        ├── .map-btn
+                                        └── .clear-btn
+
+
+================================================================================
+                            COMPONENT INTERACTIONS
+================================================================================
+
+    ┌─────────────────────────────────────────────────────────────────────────┐
+    │                            FerrariOverlay                               │
+    │                                                                         │
+    │   state: {                                                              │
+    │     isVisible: boolean                                                  │
+    │     isRecording: boolean                                                │
+    │     isConnected: boolean                                                │
+    │     activeTab: 'transcript' | 'mapping' | 'settings'                    │
+    │     transcriptLines: TranscriptLine[]                                   │
+    │     patientInfo: PatientInfo | null                                     │
+    │   }                                                                     │
+    │                                                                         │
+    │   ┌──────────────┐   ┌──────────────┐   ┌──────────────┐               │
+    │   │   Bridge     │   │ AudioCapture │   │  DOMMapper   │               │
+    │   │              │   │              │   │              │               │
+    │   │ on()         │   │ start()      │   │ detectFields │               │
+    │   │ emit()       │   │ stop()       │   │ setFieldVal  │               │
+    │   │ connect()    │   │ isRecording()│   │ extractPat   │               │
+    │   └──────┬───────┘   └──────┬───────┘   └──────┬───────┘               │
+    │          │                  │                  │                        │
+    │          └──────────────────┴──────────────────┘                        │
+    │                             │                                           │
+    │                             ▼                                           │
+    │   ┌──────────────────────────────────────────────────────────────────┐ │
+    │   │                     Event System                                  │ │
+    │   │                                                                   │ │
+    │   │   'transcript'      → addTranscriptLine()                        │ │
+    │   │   'connection'      → setState({ isConnected })                  │ │
+    │   │   'patient'         → setState({ patientInfo })                  │ │
+    │   │   'start-recording' → audioCapture.start()                       │ │
+    │   │   'stop-recording'  → audioCapture.stop()                        │ │
+    │   │   'map-fields'      → domMapper.detectFields()                   │ │
+    │   │                                                                   │ │
+    │   └──────────────────────────────────────────────────────────────────┘ │
+    │                                                                         │
+    └─────────────────────────────────────────────────────────────────────────┘
+
+
+================================================================================
+                             AUDIO CAPTURE PIPELINE
+================================================================================
+
+    ┌───────────────────────────────────────────────────────────────────────┐
+    │                        AudioCapture Module                            │
+    │                                                                       │
+    │   navigator.mediaDevices.getUserMedia()                               │
+    │              │                                                        │
+    │              ▼                                                        │
+    │   ┌──────────────────┐                                               │
+    │   │   MediaStream    │                                               │
+    │   │   (mic input)    │                                               │
+    │   └────────┬─────────┘                                               │
+    │            │                                                          │
+    │            ▼                                                          │
+    │   ┌──────────────────┐                                               │
+    │   │  AudioContext    │                                               │
+    │   │  sampleRate:     │                                               │
+    │   │  16000 Hz        │                                               │
+    │   └────────┬─────────┘                                               │
+    │            │                                                          │
+    │            ▼                                                          │
+    │   ┌──────────────────┐                                               │
+    │   │MediaStreamSource │                                               │
+    │   └────────┬─────────┘                                               │
+    │            │                                                          │
+    │            ▼                                                          │
+    │   ┌──────────────────┐     ┌──────────────────────────────────────┐ │
+    │   │ AudioWorkletNode │────▶│        pcm-processor                 │ │
+    │   │ (pcm-processor)  │     │                                      │ │
+    │   └────────┬─────────┘     │  - Buffer 4096 samples               │ │
+    │            │               │  - Convert Float32 → Int16           │ │
+    │            │               │  - Post to main thread               │ │
+    │            ▼               │                                      │ │
+    │   ┌──────────────────┐     └──────────────────────────────────────┘ │
+    │   │   WebSocket      │                                               │
+    │   │   .send(buffer)  │                                               │
+    │   └──────────────────┘                                               │
+    │                                                                       │
+    └───────────────────────────────────────────────────────────────────────┘
+
+
+    Audio Format:
+    ─────────────
+    Encoding:    Linear PCM (16-bit signed, little-endian)
+    Sample Rate: 16000 Hz
+    Channels:    1 (mono)
+    Buffer Size: 4096 samples (256ms)
+
+
+================================================================================
+                            TRANSCRIPT RENDERING
+================================================================================
+
+    Incoming Transcript Event
+           │
+           ▼
+    ┌──────────────────────────────┐
+    │ transcriptLines.findIndex(   │
+    │   l => l.id === line.id      │
+    │ )                            │
+    └──────────────┬───────────────┘
+                   │
+          ┌────────┴────────┐
+          │                 │
+          ▼                 ▼
+    [exists]           [not exists]
+          │                 │
+          ▼                 ▼
+    Update in-place    Push to array
+          │                 │
+          └────────┬────────┘
+                   │
+                   ▼
+    ┌──────────────────────────────┐
+    │ groupBySpeaker(lines)        │
+    │                              │
+    │ [                            │
+    │   { speaker: "0", lines: []},│
+    │   { speaker: "1", lines: []},│
+    │ ]                            │
+    └──────────────┬───────────────┘
+                   │
+                   ▼
+    ┌──────────────────────────────┐
+    │ Render speaker groups        │
+    │                              │
+    │ ┌────────────────────────┐   │
+    │ │ [Provider] 10:32 AM    │   │
+    │ │ Hello, how are you?    │   │
+    │ └────────────────────────┘   │
+    │ ┌────────────────────────┐   │
+    │ │ [Patient] 10:32 AM     │   │
+    │ │ I'm doing okay...      │   │
+    │ └────────────────────────┘   │
+    └──────────────────────────────┘
+
+
+================================================================================
+                            KEYBOARD SHORTCUTS
+================================================================================
+
+    document.addEventListener('keydown', handler)
+           │
+           ▼
+    ┌──────────────────────────────────────────────────────────────┐
+    │                                                              │
+    │   Alt + G  ──────────────────▶  toggleVisibility()          │
+    │                                                              │
+    │   Alt + R  ──────────────────▶  isRecording                 │
+    │                                     ? stopRecording()       │
+    │                                     : startRecording()      │
+    │                                                              │
+    │   Alt + M  ──────────────────▶  bridge.emit('map-fields')   │
+    │                                                              │
+    │   Alt + C  ──────────────────▶  clearTranscript()           │
+    │                                                              │
+    │   Escape   ──────────────────▶  toggleVisibility()          │
+    │                                                              │
+    └──────────────────────────────────────────────────────────────┘
+
+
+================================================================================
+                              CSS VARIABLES
+================================================================================
+
+    :host {
+      --bg-primary:     #1a1a2e;
+      --bg-secondary:   #16162a;
+      --bg-header:      linear-gradient(135deg, #e63946, #c62828);
+
+      --text-primary:   #eee;
+      --text-secondary: #888;
+      --text-muted:     #555;
+
+      --border-color:   #2d2d44;
+
+      --speaker-0:      #4caf50;  /* Provider - Green */
+      --speaker-1:      #2196f3;  /* Patient - Blue */
+      --speaker-other:  #9e9e9e;  /* Other - Gray */
+
+      --recording:      #ff5252;
+      --connected:      #4caf50;
+      --disconnected:   #f44336;
+
+      --radius:         12px;
+      --z-overlay:      2147483647;
+    }

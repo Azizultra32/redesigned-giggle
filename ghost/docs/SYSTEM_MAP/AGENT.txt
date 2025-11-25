@@ -1,0 +1,288 @@
+================================================================================
+                           AGENT BACKEND SYSTEM MAP
+================================================================================
+
+                              SERVER ARCHITECTURE
+================================================================================
+
+    ┌───────────────────────────────────────────────────────────────────────┐
+    │                         server.ts (Main Entry)                        │
+    │                                                                       │
+    │   const app = express();                                              │
+    │   const server = createServer(app);                                   │
+    │   const wss = new WebSocketServer({ server, path: '/ws' });          │
+    │                                                                       │
+    │   ┌─────────────────────────────────────────────────────────────────┐│
+    │   │                      HTTP Endpoints                             ││
+    │   │                                                                 ││
+    │   │   GET  /health          → Health check                         ││
+    │   │   GET  /transcripts     → List transcripts                     ││
+    │   │   GET  /transcripts/:id → Get single transcript                ││
+    │   │   POST /transcripts     → Create transcript (manual)           ││
+    │   │   GET  /demo/patient    → Demo patient lookup                  ││
+    │   │                                                                 ││
+    │   └─────────────────────────────────────────────────────────────────┘│
+    │                                                                       │
+    │   ┌─────────────────────────────────────────────────────────────────┐│
+    │   │                     WebSocket Handler                           ││
+    │   │                                                                 ││
+    │   │   wss.on('connection', async (ws, req) => {                    ││
+    │   │     // Extract params from URL                                 ││
+    │   │     // Create transcript run in Supabase                       ││
+    │   │     // Initialize Deepgram consumer                            ││
+    │   │     // Setup message handlers                                  ││
+    │   │   });                                                          ││
+    │   │                                                                 ││
+    │   └─────────────────────────────────────────────────────────────────┘│
+    │                                                                       │
+    └───────────────────────────────────────────────────────────────────────┘
+
+
+================================================================================
+                           WEBSOCKET SESSION LIFECYCLE
+================================================================================
+
+    Connection                    Active Session               Disconnection
+    ──────────                    ──────────────               ─────────────
+
+    ws.on('connect')              ws.on('message')             ws.on('close')
+          │                             │                            │
+          ▼                             ▼                            ▼
+    ┌─────────────┐              ┌─────────────┐             ┌─────────────┐
+    │ Parse query │              │ Check type  │             │ Cleanup     │
+    │ providerId  │              │             │             │             │
+    │ patientCode │              │ binary →    │             │ Disconnect  │
+    └──────┬──────┘              │  audio data │             │ Deepgram    │
+           │                     │             │             │             │
+           ▼                     │ json →      │             │ Finalize    │
+    ┌─────────────┐              │  command    │             │ transcript  │
+    │ Create      │              └──────┬──────┘             │             │
+    │ transcript  │                     │                    │ Remove from │
+    │ run in DB   │              ┌──────┴──────┐             │ sessions    │
+    └──────┬──────┘              │             │             └─────────────┘
+           │                     ▼             ▼
+           ▼              [Binary]       [JSON]
+    ┌─────────────┐              │             │
+    │ Init        │              ▼             ▼
+    │ Deepgram    │      ┌─────────────┐ ┌─────────────┐
+    │ consumer    │      │ deepgram    │ │ Handle      │
+    └──────┬──────┘      │ .send(buf)  │ │ command     │
+           │             └─────────────┘ │ (future)    │
+           ▼                             └─────────────┘
+    ┌─────────────┐
+    │ Store in    │
+    │ sessions    │
+    │ Map         │
+    └─────────────┘
+
+
+================================================================================
+                          DEEPGRAM CONSUMER MODULE
+================================================================================
+
+    ┌───────────────────────────────────────────────────────────────────────┐
+    │                 audio/consumers/deepgram.ts                           │
+    │                                                                       │
+    │   class DeepgramConsumer {                                            │
+    │                                                                       │
+    │     constructor(options: {                                            │
+    │       onTranscript: (result: TranscriptResult) => void;              │
+    │       onError: (error: Error) => void;                               │
+    │     })                                                                │
+    │                                                                       │
+    │     async connect(): Promise<void>                                    │
+    │     sendAudio(data: Buffer): void                                     │
+    │     disconnect(): void                                                │
+    │                                                                       │
+    │   }                                                                   │
+    │                                                                       │
+    └───────────────────────────────────────────────────────────────────────┘
+
+
+    Deepgram Connection Flow:
+    ─────────────────────────
+
+         DeepgramConsumer                    Deepgram API
+               │                                  │
+               │  createClient(apiKey)            │
+               │─────────────────────────────────▶│
+               │                                  │
+               │  client.listen.live({            │
+               │    model: 'nova-2',              │
+               │    diarize: true,                │
+               │    ...                           │
+               │  })                              │
+               │─────────────────────────────────▶│
+               │                                  │
+               │◀───────────────────'Open'────────│
+               │                                  │
+               │══════ audio data ═══════════════▶│
+               │                                  │
+               │◀═══════ 'Transcript' ════════════│
+               │                                  │
+               │  connection.finish()             │
+               │─────────────────────────────────▶│
+               │                                  │
+               │◀───────────────────'Close'───────│
+               │                                  │
+
+
+================================================================================
+                        TRANSCRIPT RESULT PROCESSING
+================================================================================
+
+    Deepgram 'Transcript' Event
+              │
+              ▼
+    ┌──────────────────────────────┐
+    │ Extract:                     │
+    │   - channel.alternatives[0]  │
+    │   - transcript text          │
+    │   - words array              │
+    │   - is_final flag            │
+    └──────────────┬───────────────┘
+                   │
+                   ▼
+    ┌──────────────────────────────┐
+    │ Diarization Processing:      │
+    │                              │
+    │ for each word:               │
+    │   speakerCounts[word.speaker]│
+    │     += 1                     │
+    │                              │
+    │ dominantSpeaker =            │
+    │   max(speakerCounts)         │
+    └──────────────┬───────────────┘
+                   │
+                   ▼
+    ┌──────────────────────────────┐
+    │ Build TranscriptResult:      │
+    │ {                            │
+    │   id: `msg_${counter}_ts`,   │
+    │   text: transcript,          │
+    │   speaker: dominantSpeaker,  │
+    │   timestamp: Date.now(),     │
+    │   is_final: data.is_final,   │
+    │   confidence: alternative    │
+    │               .confidence,   │
+    │   words: [...mapped words]   │
+    │ }                            │
+    └──────────────┬───────────────┘
+                   │
+          ┌────────┴────────┐
+          │                 │
+          ▼                 ▼
+    ┌───────────┐    ┌───────────┐
+    │ Emit to   │    │ If final: │
+    │ WebSocket │    │ Save to   │
+    │ (overlay) │    │ Supabase  │
+    └───────────┘    └───────────┘
+
+
+================================================================================
+                           SUPABASE INTEGRATION
+================================================================================
+
+    ┌───────────────────────────────────────────────────────────────────────┐
+    │                      lib/supabase.ts                                  │
+    │                                                                       │
+    │   getClient(): SupabaseClient                                         │
+    │     - Singleton pattern                                               │
+    │     - Falls back to mock in dev if no credentials                    │
+    │                                                                       │
+    │   createTranscriptRun(providerId): Promise<string>                    │
+    │     - INSERT into transcripts2                                        │
+    │     - Returns UUID                                                    │
+    │                                                                       │
+    │   saveChunk(transcriptId, chunk): Promise<void>                       │
+    │     - INSERT into transcript_chunks                                   │
+    │                                                                       │
+    │   updateTranscriptStatus(id, status): Promise<void>                   │
+    │     - UPDATE transcripts2 status                                      │
+    │                                                                       │
+    │   getFullTranscript(id): Promise<string>                              │
+    │     - SELECT chunks ordered by chunk_index                            │
+    │     - Join into formatted string                                      │
+    │                                                                       │
+    └───────────────────────────────────────────────────────────────────────┘
+
+
+    Query Pattern Example:
+    ──────────────────────
+
+    async function saveChunk(transcriptId, chunk) {
+      const { error } = await supabase
+        .from('transcript_chunks')
+        .insert({
+          transcript_id: transcriptId,
+          chunk_index: chunk.index,
+          speaker: chunk.speaker,
+          text: chunk.text,
+          start_time: chunk.startTime,
+          end_time: chunk.endTime,
+          confidence: chunk.confidence,
+          words: chunk.words,          // JSONB
+          is_final: true
+        });
+
+      if (error) throw error;
+    }
+
+
+================================================================================
+                              ERROR HANDLING
+================================================================================
+
+    ┌─────────────────────────────────────────────────────────────────────┐
+    │                        Error Categories                             │
+    │                                                                     │
+    │   ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐   │
+    │   │   CONNECTION    │  │    DEEPGRAM     │  │    SUPABASE     │   │
+    │   │                 │  │                 │  │                 │   │
+    │   │ WS disconnect   │  │ AUTH_ERROR      │  │ 42P01 relation  │   │
+    │   │ WS timeout      │  │ Connection lost │  │ RLS violation   │   │
+    │   │ Network error   │  │ Rate limit      │  │ Network error   │   │
+    │   │                 │  │ Invalid audio   │  │                 │   │
+    │   └────────┬────────┘  └────────┬────────┘  └────────┬────────┘   │
+    │            │                    │                    │             │
+    │            └────────────────────┼────────────────────┘             │
+    │                                 │                                  │
+    │                                 ▼                                  │
+    │   ┌─────────────────────────────────────────────────────────────┐ │
+    │   │                    Error Handler                            │ │
+    │   │                                                             │ │
+    │   │   1. Log error with context                                │ │
+    │   │   2. Emit error to overlay via WebSocket                   │ │
+    │   │   3. Attempt recovery (reconnect, retry)                   │ │
+    │   │   4. Update session status if unrecoverable               │ │
+    │   │                                                             │ │
+    │   └─────────────────────────────────────────────────────────────┘ │
+    │                                                                     │
+    └─────────────────────────────────────────────────────────────────────┘
+
+
+================================================================================
+                              SESSION STORAGE
+================================================================================
+
+    const sessions: Map<WebSocket, Session> = new Map();
+
+    interface Session {
+      deepgram: DeepgramConsumer;      // Deepgram connection
+      transcriptRunId: string | null;  // Supabase record ID
+      providerId: string;              // Who is recording
+      startTime: number;               // Session start timestamp
+    }
+
+    Session Lifecycle:
+    ──────────────────
+
+    ws connect  →  sessions.set(ws, session)
+        │
+        ▼
+    [Active Recording]
+        │
+        ▼
+    ws close    →  sessions.delete(ws)
+                   session.deepgram.disconnect()
+                   updateTranscriptStatus('completed')

@@ -1,0 +1,234 @@
+================================================================================
+                       SUPABASE PATH DIAGRAM
+================================================================================
+
+                        CONNECTION SETUP
+================================================================================
+
+    Backend Initialization:
+    ───────────────────────
+
+    import { createClient } from '@supabase/supabase-js'
+         │
+         ▼
+    getSupabaseClient()
+         │
+         ├── Check singleton instance
+         │
+         ├── Read environment
+         │   ├── SUPABASE_URL
+         │   └── SUPABASE_SERVICE_ROLE_KEY
+         │
+         ├── Missing credentials?
+         │   └── Return mock client (offline mode)
+         │
+         └── createClient(url, key)
+              │
+              ▼
+         ┌─────────────────────────────────────┐
+         │  Supabase Client                    │
+         │  - Bypasses RLS (service role)      │
+         │  - Direct database access           │
+         │  - Used only in backend             │
+         └─────────────────────────────────────┘
+
+
+================================================================================
+                     TRANSCRIPT OPERATIONS
+================================================================================
+
+    Create Transcript Run:
+    ──────────────────────
+
+    createTranscriptRun(userId, patientCode?, patientUuid?)
+         │
+         ▼
+    ┌─────────────────────────────────────────────────────────┐
+    │  INSERT INTO transcripts2 (                            │
+    │    user_id,                                            │
+    │    patient_code,                                       │
+    │    patient_uuid,                                       │
+    │    language,                                           │
+    │    transcript_chunk,                                   │
+    │    ai_interim_summaries                                │
+    │  ) VALUES (                                            │
+    │    $userId,                                            │
+    │    $patientCode || '',                                 │
+    │    $patientUuid || NULL,                               │
+    │    'en',                                               │
+    │    ARRAY[]::jsonb[],                                   │
+    │    ARRAY[]::jsonb[]                                    │
+    │  )                                                     │
+    │  RETURNING id                                          │
+    └─────────────────────────────────────────────────────────┘
+         │
+         ▼
+    Return BIGINT id
+
+
+    Save Transcript Chunks:
+    ───────────────────────
+
+    saveTranscriptChunks(transcriptId, chunks[])
+         │
+         ▼
+    Step 1: Fetch existing chunks
+    ┌─────────────────────────────────────────────────────────┐
+    │  SELECT transcript_chunk                                │
+    │  FROM transcripts2                                      │
+    │  WHERE id = $transcriptId                               │
+    └─────────────────────────────────────────────────────────┘
+         │
+         ▼
+    Step 2: Append new chunks
+    ┌─────────────────────────────────────────────────────────┐
+    │  existingChunks = result.transcript_chunk || []        │
+    │  updatedChunks = [...existingChunks, ...newChunks]     │
+    └─────────────────────────────────────────────────────────┘
+         │
+         ▼
+    Step 3: Rebuild full transcript
+    ┌─────────────────────────────────────────────────────────┐
+    │  fullText = updatedChunks                              │
+    │    .map(c => `[Speaker ${c.speaker}]: ${c.text}`)     │
+    │    .join('\n')                                         │
+    └─────────────────────────────────────────────────────────┘
+         │
+         ▼
+    Step 4: Update record
+    ┌─────────────────────────────────────────────────────────┐
+    │  UPDATE transcripts2                                   │
+    │  SET transcript_chunk = $updatedChunks,                │
+    │      transcript = $fullText                            │
+    │  WHERE id = $transcriptId                              │
+    └─────────────────────────────────────────────────────────┘
+
+
+    Complete Transcript:
+    ────────────────────
+
+    updateTranscriptRun(transcriptId)
+         │
+         ▼
+    ┌─────────────────────────────────────────────────────────┐
+    │  UPDATE transcripts2                                   │
+    │  SET completed_at = NOW()                              │
+    │  WHERE id = $transcriptId                              │
+    └─────────────────────────────────────────────────────────┘
+
+
+================================================================================
+                        DATA MODEL
+================================================================================
+
+    transcripts2 Table:
+    ────────────────────
+
+    ┌─────────────────────────────────────────────────────────────────────────┐
+    │                           transcripts2                                  │
+    ├─────────────────────────────────────────────────────────────────────────┤
+    │  id                   │ BIGINT      │ PK, auto-generated               │
+    │  user_id              │ UUID        │ NOT NULL, clinician ID           │
+    │  created_at           │ TIMESTAMPTZ │ DEFAULT now()                    │
+    │  completed_at         │ TIMESTAMPTZ │ NULL until done                  │
+    │  mid                  │ UUID        │ UNIQUE message ID                │
+    │  transcript           │ TEXT        │ Full flattened text              │
+    │  transcript_chunk     │ JSONB[]     │ Diarized chunks ◄── KEY FIELD   │
+    │  patient_code         │ TEXT        │ AssistMD encounter ID            │
+    │  patient_uuid         │ UUID        │ EMR patient reference            │
+    │  ai_summary           │ JSONB       │ Final AI summary                 │
+    │  ai_interim_summaries │ JSONB[]     │ Incremental summaries            │
+    │  language             │ TEXT        │ 'en'                             │
+    │  ...                  │             │ Additional fields                │
+    └─────────────────────────────────────────────────────────────────────────┘
+
+
+    transcript_chunk Array Element:
+    ───────────────────────────────
+
+    ┌─────────────────────────────────────────────────────────────────────────┐
+    │  {                                                                      │
+    │    "speaker": 0,              // 0 = Provider, 1+ = Patient            │
+    │    "text": "Hello...",        // Punctuated text                       │
+    │    "start": 0.0,              // Start time (seconds)                  │
+    │    "end": 2.5,                // End time (seconds)                    │
+    │    "word_count": 4,           // Number of words                       │
+    │    "raw": [                   // Original Deepgram words               │
+    │      { "word": "Hello", "start": 0.0, "end": 0.4, ... },              │
+    │      ...                                                               │
+    │    ]                                                                    │
+    │  }                                                                      │
+    └─────────────────────────────────────────────────────────────────────────┘
+
+
+================================================================================
+                      QUERY PATTERNS
+================================================================================
+
+    Get Full Transcript:
+    ────────────────────
+
+    SELECT transcript FROM transcripts2 WHERE id = $id
+
+
+    Get Chunks:
+    ───────────
+
+    SELECT transcript_chunk FROM transcripts2 WHERE id = $id
+
+
+    Get User's Transcripts:
+    ───────────────────────
+
+    SELECT id, patient_code, created_at, completed_at
+    FROM transcripts2
+    WHERE user_id = $userId
+    ORDER BY created_at DESC
+    LIMIT 20
+
+
+    Count Chunks:
+    ─────────────
+
+    SELECT jsonb_array_length(transcript_chunk) as count
+    FROM transcripts2
+    WHERE id = $id
+
+
+================================================================================
+                       ERROR HANDLING
+================================================================================
+
+    Database Error Flow:
+    ────────────────────
+
+    supabase.from('transcripts2').insert(...)
+         │
+         ├── Success ──► Return data
+         │
+         └── Error
+              │
+              ├── Code 23505 ──► Unique violation (duplicate mid)
+              │
+              ├── Code 23503 ──► Foreign key violation
+              │
+              └── Other ──► General database error
+                   │
+                   ▼
+              Log error + throw
+
+
+    Retry Strategy:
+    ───────────────
+
+    saveTranscriptChunks fails
+         │
+         ▼
+    Re-queue chunks
+    pendingChunks.unshift(...failedChunks)
+         │
+         ▼
+    Retry on next timer tick (5s)
+
+
+================================================================================

@@ -1,0 +1,263 @@
+================================================================================
+                            MCP SYSTEM MAP
+================================================================================
+
+                        CHROME MCP INTEGRATION
+================================================================================
+
+    MCP (Model Context Protocol) is used to launch Chrome with the extension
+    in a controlled environment for testing and development.
+
+
+    MCP STARTUP SEQUENCE
+    ────────────────────
+
+    ┌───────────────────────────────────────────────────────────────────────┐
+    │                                                                       │
+    │   1. scripts/start-mcp.sh executes                                   │
+    │                                                                       │
+    │   2. Creates clean Chrome profile (or reuses existing)               │
+    │                                                                       │
+    │   3. Launches Chrome with flags:                                     │
+    │      --load-extension=./extension                                    │
+    │      --user-data-dir=/tmp/ghost-chrome-profile                       │
+    │      --no-first-run                                                  │
+    │      --disable-default-apps                                          │
+    │                                                                       │
+    │   4. Extension auto-loads from manifest.json                         │
+    │                                                                       │
+    │   5. Service worker (background.ts) initializes                      │
+    │                                                                       │
+    │   6. Content script ready to inject on page load                     │
+    │                                                                       │
+    └───────────────────────────────────────────────────────────────────────┘
+
+
+================================================================================
+                          STARTUP SCRIPT
+================================================================================
+
+    scripts/start-mcp.sh
+    ────────────────────
+
+    #!/bin/bash
+    set -e
+
+    PROFILE_DIR="/tmp/ghost-chrome-profile"
+    EXTENSION_DIR="$(dirname "$0")/../extension"
+
+    # Build extension first
+    echo "Building extension..."
+    cd "$EXTENSION_DIR" && npm run build
+    cd -
+
+    # Kill any existing Chrome instances with our profile
+    pkill -f "user-data-dir=$PROFILE_DIR" || true
+
+    # Launch Chrome
+    echo "Launching Chrome with extension..."
+    google-chrome \
+      --load-extension="$EXTENSION_DIR" \
+      --user-data-dir="$PROFILE_DIR" \
+      --no-first-run \
+      --disable-default-apps \
+      --auto-open-devtools-for-tabs \
+      "http://localhost:3000" &
+
+    echo "Chrome launched. Extension should be active."
+
+
+================================================================================
+                        EXTENSION LOAD VERIFICATION
+================================================================================
+
+    Manual Verification Steps:
+    ──────────────────────────
+
+    1. Open chrome://extensions/
+    2. Verify "GHOST-NEXT Ferrari Overlay" is listed
+    3. Check "Enabled" toggle is ON
+    4. Note the Extension ID
+
+    Console Verification:
+    ─────────────────────
+
+    1. Open any web page
+    2. Open DevTools (F12)
+    3. Console should show:
+       [GHOST-NEXT] Initializing Ferrari Overlay...
+       [GHOST-NEXT] Ferrari Overlay initialized successfully
+
+    4. Check for errors:
+       - Red errors = something broken
+       - Yellow warnings = usually ok
+
+
+================================================================================
+                         PROFILE MANAGEMENT
+================================================================================
+
+    Clean Profile Creation:
+    ───────────────────────
+
+    /tmp/ghost-chrome-profile/
+    ├── Default/
+    │   ├── Extensions/
+    │   │   └── <extension-id>/
+    │   ├── Preferences
+    │   └── Local Storage/
+    └── First Run
+
+    Why Clean Profile:
+    ──────────────────
+
+    - No interference from other extensions
+    - Consistent testing environment
+    - No cached state from previous sessions
+    - Predictable permissions state
+
+
+    Reset Profile:
+    ──────────────
+
+    scripts/reset-profile.sh:
+
+    #!/bin/bash
+    PROFILE_DIR="/tmp/ghost-chrome-profile"
+    rm -rf "$PROFILE_DIR"
+    echo "Profile reset. Run start-mcp.sh to create fresh."
+
+
+================================================================================
+                       DEBUGGING WITH MCP
+================================================================================
+
+    Service Worker Debugging:
+    ─────────────────────────
+
+    1. Go to chrome://extensions/
+    2. Find GHOST-NEXT extension
+    3. Click "Service Worker" link
+    4. DevTools opens for background.ts
+    5. Set breakpoints, inspect logs
+
+
+    Content Script Debugging:
+    ─────────────────────────
+
+    1. Open target web page
+    2. Open DevTools (F12)
+    3. Sources tab → Content scripts
+    4. Find overlay.ts / content.ts
+    5. Set breakpoints
+
+
+    WebSocket Inspection:
+    ─────────────────────
+
+    1. DevTools → Network tab
+    2. Filter by "WS"
+    3. Click WebSocket connection
+    4. Messages tab shows all frames
+    5. Can see audio binary + JSON messages
+
+
+================================================================================
+                      COMMON MCP ISSUES
+================================================================================
+
+    Issue: Extension not loading
+    ────────────────────────────
+    Cause: Build not run or manifest error
+    Fix:   Run `npm run build` in extension/
+           Check manifest.json syntax
+
+
+    Issue: "Extension not found"
+    ────────────────────────────
+    Cause: Wrong path to extension directory
+    Fix:   Verify --load-extension path is absolute
+           Check extension/ folder exists
+
+
+    Issue: Content script not injecting
+    ────────────────────────────────────
+    Cause: manifest matches pattern wrong
+    Fix:   Check content_scripts.matches in manifest
+           Verify page URL matches pattern
+
+
+    Issue: Service worker inactive
+    ──────────────────────────────
+    Cause: Chrome suspends idle workers
+    Fix:   This is normal; worker wakes on events
+           Add keep-alive if needed for testing
+
+
+    Issue: Permission denied (microphone)
+    ─────────────────────────────────────
+    Cause: User hasn't granted permission
+    Fix:   Click microphone icon in address bar
+           Or go to chrome://settings/content/microphone
+
+
+================================================================================
+                      ENVIRONMENT VARIABLES
+================================================================================
+
+    MCP expects these to be set for full functionality:
+
+    Backend (start before Chrome):
+    ──────────────────────────────
+    PORT=3001
+    DEEPGRAM_API_KEY=<your-key>
+    SUPABASE_URL=<your-url>
+    SUPABASE_SERVICE_ROLE_KEY=<your-key>
+
+
+    Chrome Flags (optional):
+    ────────────────────────
+    --disable-web-security          # Only for local dev
+    --allow-insecure-localhost      # For self-signed certs
+    --enable-logging --v=1          # Verbose Chrome logs
+
+
+================================================================================
+                    SMOKE TEST VERIFICATION
+================================================================================
+
+    scripts/smoke-test.sh
+    ──────────────────────
+
+    #!/bin/bash
+    set -e
+
+    echo "=== GHOST-NEXT Smoke Test ==="
+
+    # 1. Check backend is running
+    echo -n "Backend health... "
+    curl -s http://localhost:3001/health | grep -q '"status":"ok"' \
+      && echo "✓" || echo "✗ (start backend first)"
+
+    # 2. Check Deepgram connectivity
+    echo -n "Deepgram API... "
+    if [ -n "$DEEPGRAM_API_KEY" ]; then
+      echo "✓ (key set)"
+    else
+      echo "✗ (DEEPGRAM_API_KEY not set)"
+    fi
+
+    # 3. Check Supabase connectivity
+    echo -n "Supabase API... "
+    if [ -n "$SUPABASE_URL" ]; then
+      echo "✓ (URL set)"
+    else
+      echo "⚠ (SUPABASE_URL not set - offline mode)"
+    fi
+
+    # 4. Check extension build
+    echo -n "Extension build... "
+    [ -f "extension/dist/content.js" ] \
+      && echo "✓" || echo "✗ (run npm run build)"
+
+    echo "=== Smoke Test Complete ==="

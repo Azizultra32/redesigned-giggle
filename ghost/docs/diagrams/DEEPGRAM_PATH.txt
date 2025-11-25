@@ -1,0 +1,251 @@
+================================================================================
+                       DEEPGRAM PATH DIAGRAM
+================================================================================
+
+                        AUDIO PIPELINE
+================================================================================
+
+    Complete Audio Flow:
+    ────────────────────
+
+    ┌──────────┐   getUserMedia   ┌──────────┐
+    │  Browser │ ───────────────► │   Mic    │
+    │          │                  │ Hardware │
+    └──────────┘                  └────┬─────┘
+                                       │
+                                       ▼
+                              ┌────────────────┐
+                              │  MediaStream   │
+                              │  (raw audio)   │
+                              └───────┬────────┘
+                                      │
+                                      ▼
+                              ┌────────────────┐
+                              │  AudioContext  │
+                              │  (16kHz)       │
+                              └───────┬────────┘
+                                      │
+                                      ▼
+                        ┌─────────────────────────┐
+                        │  ScriptProcessor        │
+                        │  (4096 samples/buffer)  │
+                        └───────────┬─────────────┘
+                                    │
+                                    ▼
+                        ┌─────────────────────────┐
+                        │  Float32 → Int16 PCM    │
+                        │  Conversion             │
+                        └───────────┬─────────────┘
+                                    │
+                                    ▼
+                        ┌─────────────────────────┐
+                        │  WebSocket Binary       │
+                        │  Send                   │
+                        └───────────┬─────────────┘
+                                    │
+                                    ▼
+    ════════════════════════════════════════════════════════════════
+                             NETWORK
+    ════════════════════════════════════════════════════════════════
+                                    │
+                                    ▼
+                        ┌─────────────────────────┐
+                        │  Backend WebSocket      │
+                        │  Receive Binary         │
+                        └───────────┬─────────────┘
+                                    │
+                                    ▼
+                        ┌─────────────────────────┐
+                        │  DeepgramConsumer       │
+                        │  sendAudio(buffer)      │
+                        └───────────┬─────────────┘
+                                    │
+                                    ▼
+    ════════════════════════════════════════════════════════════════
+                           DEEPGRAM API
+    ════════════════════════════════════════════════════════════════
+                                    │
+                                    ▼
+                        ┌─────────────────────────┐
+                        │  nova-2 Model           │
+                        │  + Diarization          │
+                        └───────────┬─────────────┘
+                                    │
+                                    ▼
+                        ┌─────────────────────────┐
+                        │  Transcript Results     │
+                        │  (interim + final)      │
+                        └─────────────────────────┘
+
+
+================================================================================
+                     DEEPGRAM CONFIGURATION
+================================================================================
+
+    API Configuration:
+    ──────────────────
+
+    client.listen.live({
+      model: 'nova-2',           // Best accuracy model
+      language: 'en-US',         // Language
+      smart_format: true,        // Smart formatting
+      punctuate: true,           // Add punctuation
+      diarize: true,             // Speaker identification
+      interim_results: true,     // Partial results
+      utterance_end_ms: 1000,    // Silence threshold (1s)
+      vad_events: true,          // Voice activity detection
+      encoding: 'linear16',      // PCM 16-bit
+      sample_rate: 16000,        // 16 kHz
+      channels: 1                // Mono
+    })
+
+
+================================================================================
+                      TRANSCRIPT EVENTS
+================================================================================
+
+    Event Flow:
+    ───────────
+
+    Audio Data In
+         │
+         ▼
+    ┌─────────────────────────────────────────────────────────────┐
+    │                    DEEPGRAM PROCESSING                       │
+    └─────────────────────────────────────────────────────────────┘
+         │
+         ├──► Interim Result ──► { is_final: false }
+         │         │
+         │         ▼
+         │    ┌───────────────────────────────────────┐
+         │    │  Speaker 0 (interim)                  │
+         │    │  "Hello how are..."                   │
+         │    └───────────────────────────────────────┘
+         │         │
+         │         ▼
+         │    Send to extension (display only)
+         │
+         │
+         ├──► Final Result ──► { is_final: true }
+         │         │
+         │         ▼
+         │    ┌───────────────────────────────────────┐
+         │    │  {                                    │
+         │    │    transcript: "Hello, how are you?",│
+         │    │    confidence: 0.98,                  │
+         │    │    words: [                           │
+         │    │      {word: "Hello", speaker: 0, ...},│
+         │    │      {word: "how", speaker: 0, ...}, │
+         │    │      ...                              │
+         │    │    ]                                  │
+         │    │  }                                    │
+         │    └───────────────────────────────────────┘
+         │         │
+         │         ├──► Send to extension
+         │         │
+         │         └──► Feed to ChunkAggregator
+         │
+         │
+         └──► Utterance End Event
+                   │
+                   ▼
+              Force flush current chunk
+
+
+================================================================================
+                    SPEAKER DIARIZATION
+================================================================================
+
+    Word-Level Speaker Assignment:
+    ──────────────────────────────
+
+    Deepgram Response:
+    ┌─────────────────────────────────────────────────────────────┐
+    │  words: [                                                   │
+    │    { word: "Hello", start: 0.0, end: 0.4, speaker: 0 },    │
+    │    { word: "doctor", start: 0.5, end: 0.9, speaker: 1 },   │
+    │    { word: "I've", start: 1.0, end: 1.2, speaker: 1 },     │
+    │    { word: "been", start: 1.3, end: 1.5, speaker: 1 },     │
+    │    { word: "feeling", start: 1.6, end: 2.0, speaker: 1 },  │
+    │    { word: "well", start: 2.1, end: 2.4, speaker: 1 },     │
+    │  ]                                                          │
+    └─────────────────────────────────────────────────────────────┘
+         │
+         ▼
+    Dominant Speaker Detection:
+    ┌─────────────────────────────────────────────────────────────┐
+    │  counts = { 0: 1, 1: 5 }                                    │
+    │  dominant = 1 (Patient)                                     │
+    └─────────────────────────────────────────────────────────────┘
+
+
+    Speaker Mapping:
+    ────────────────
+
+    ┌─────────────────────────────────────────────────────────────┐
+    │  Speaker ID │ Role                                          │
+    ├─────────────┼───────────────────────────────────────────────┤
+    │      0      │ Provider (clinician)                          │
+    │      1      │ Patient                                       │
+    │    2-49     │ Additional participants                       │
+    └─────────────────────────────────────────────────────────────┘
+
+
+================================================================================
+                      ERROR HANDLING
+================================================================================
+
+    Error Types:
+    ────────────
+
+    ┌─────────────────────────────────────────────────────────────┐
+    │  Error Type        │ Cause              │ Action            │
+    ├────────────────────┼────────────────────┼───────────────────┤
+    │  Connection Failed │ Invalid API key    │ Notify user       │
+    │  Rate Limited      │ Too many requests  │ Back off + retry  │
+    │  Network Error     │ Connectivity issue │ Reconnect         │
+    │  Audio Format      │ Wrong encoding     │ Log error         │
+    └─────────────────────────────────────────────────────────────┘
+
+
+    Error Event Handler:
+    ────────────────────
+
+    connection.on(LiveTranscriptionEvents.Error, (error) => {
+      console.error('[Deepgram] Error:', error);
+      config.onError(error);
+      // Error propagates to extension
+    });
+
+
+================================================================================
+                       AUDIO FORMAT
+================================================================================
+
+    Required Format:
+    ────────────────
+
+    ┌─────────────────────────────────────────────────────────────┐
+    │  Parameter    │ Value          │ Notes                      │
+    ├───────────────┼────────────────┼────────────────────────────┤
+    │  Encoding     │ linear16       │ PCM 16-bit signed          │
+    │  Sample Rate  │ 16000 Hz       │ 16 kHz                     │
+    │  Channels     │ 1              │ Mono                       │
+    │  Bit Depth    │ 16             │ 2 bytes per sample         │
+    │  Endianness   │ Little-endian  │ Standard for web           │
+    └─────────────────────────────────────────────────────────────┘
+
+
+    Conversion Formula:
+    ───────────────────
+
+    Float32 (-1.0 to 1.0) → Int16 (-32768 to 32767)
+
+    if (sample < 0) {
+      int16 = sample * 32768;
+    } else {
+      int16 = sample * 32767;
+    }
+
+
+================================================================================
