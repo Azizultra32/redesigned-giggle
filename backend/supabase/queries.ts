@@ -242,3 +242,118 @@ export async function saveInterimSummary(
     throw error;
   }
 }
+
+/**
+ * Get latest transcript profile (matches contract specification)
+ */
+export async function latestTranscriptProfile(): Promise<{
+  id: number | null;
+  patient_code: string | null;
+  patient_uuid: string | null;
+  transcript: string | null;
+  created_at: string | null;
+  completed_at: string | null;
+}> {
+  const client = getSupabaseClient();
+
+  const { data, error } = await client
+    .from('transcripts2')
+    .select('id, patient_code, patient_uuid, transcript, created_at, completed_at')
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .single();
+
+  if (error && error.code !== 'PGRST116') {
+    console.error('[Supabase] Failed to get latest transcript profile:', error);
+    return {
+      id: null,
+      patient_code: null,
+      patient_uuid: null,
+      transcript: null,
+      created_at: null,
+      completed_at: null
+    };
+  }
+
+  return {
+    id: data?.id ?? null,
+    patient_code: data?.patient_code ?? null,
+    patient_uuid: data?.patient_uuid ?? null,
+    transcript: data?.transcript ?? null,
+    created_at: data?.created_at ?? null,
+    completed_at: data?.completed_at ?? null
+  };
+}
+
+/**
+ * Mark transcript as completed
+ */
+export async function markTranscriptCompleted(id: number): Promise<void> {
+  const client = getSupabaseClient();
+
+  const { error } = await client
+    .from('transcripts2')
+    .update({
+      completed_at: new Date().toISOString()
+    })
+    .eq('id', id);
+
+  if (error) {
+    console.error('[Supabase] Failed to mark transcript completed:', error);
+    throw error;
+  }
+
+  console.log(`[Supabase] Marked transcript ${id} as completed`);
+}
+
+/**
+ * Get a specific transcript by ID
+ */
+export async function getTranscriptById(id: number) {
+  const client = getSupabaseClient();
+
+  const { data, error } = await client
+    .from('transcripts2')
+    .select('*')
+    .eq('id', id)
+    .single();
+
+  if (error) {
+    console.error('[Supabase] Failed to get transcript:', error);
+    throw error;
+  }
+
+  return data;
+}
+
+/**
+ * Save AI summary to transcript
+ */
+export async function saveSummary(
+  transcriptId: number,
+  summary: object,
+  shortSummary?: object
+): Promise<void> {
+  const client = getSupabaseClient();
+
+  const updateData: Record<string, unknown> = {
+    ai_summary: summary,
+    processed_at: new Date().toISOString()
+  };
+
+  if (shortSummary) {
+    updateData.ai_short_summary = shortSummary;
+  }
+
+  const { error } = await client
+    .from('transcripts2')
+    .update(updateData)
+    .eq('id', transcriptId);
+
+  if (error) {
+    console.error('[Supabase] Failed to save summary:', error);
+    throw error;
+  }
+
+  console.log(`[Supabase] Saved summary to transcript ${transcriptId}`);
+}

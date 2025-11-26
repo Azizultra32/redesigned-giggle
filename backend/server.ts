@@ -14,7 +14,8 @@ import { createServer } from 'http';
 import { WebSocketServer } from 'ws';
 import { config } from 'dotenv';
 import { WebSocketBroker } from './ws/broker.js';
-import { generateDemoPatientCode, validatePatientCode } from './utils/patient.js';
+import { generateDemoPatientCode, generatePatientCode, validatePatientCode } from './utils/patient.js';
+import { getTranscriptById, latestTranscriptProfile } from './supabase/queries.js';
 
 // Load environment variables
 config();
@@ -62,6 +63,39 @@ app.post('/demo/patient/validate', (req: Request, res: Response) => {
   res.json({ valid, patientCode });
 });
 
+// Get transcript by ID
+app.get('/transcripts/:id', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id);
+    if (isNaN(id)) {
+      res.status(400).json({ ok: false, error: 'Invalid transcript ID' });
+      return;
+    }
+
+    const transcript = await getTranscriptById(id);
+    if (!transcript) {
+      res.status(404).json({ ok: false, error: 'Transcript not found' });
+      return;
+    }
+
+    res.json({ ok: true, transcript });
+  } catch (error: any) {
+    console.error('[Server] GET /transcripts/:id error:', error);
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+// Get latest transcript profile
+app.get('/transcripts/latest/profile', async (_req: Request, res: Response) => {
+  try {
+    const profile = await latestTranscriptProfile();
+    res.json({ ok: true, ...profile });
+  } catch (error: any) {
+    console.error('[Server] GET /transcripts/latest/profile error:', error);
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
 // Create HTTP server
 const server = createServer(app);
 
@@ -104,12 +138,14 @@ app.get('/stats', (_req: Request, res: Response) => {
 server.listen(PORT, () => {
   console.log('');
   console.log('========================================');
-  console.log('   GHOST-NEXT Backend Server');
+  console.log('   AssistMD Backend Server');
   console.log('========================================');
-  console.log(`   Port:      ${PORT}`);
-  console.log(`   WebSocket: ws://localhost:${PORT}/ws`);
-  console.log(`   Health:    http://localhost:${PORT}/health`);
-  console.log(`   Demo:      http://localhost:${PORT}/demo/patient`);
+  console.log(`   Port:        ${PORT}`);
+  console.log(`   WebSocket:   ws://localhost:${PORT}/ws`);
+  console.log(`   Health:      http://localhost:${PORT}/health`);
+  console.log(`   Demo:        http://localhost:${PORT}/demo/patient`);
+  console.log(`   Transcripts: http://localhost:${PORT}/transcripts/:id`);
+  console.log(`   Stats:       http://localhost:${PORT}/stats`);
   console.log('========================================');
   console.log('');
 });

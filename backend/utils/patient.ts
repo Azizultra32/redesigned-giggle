@@ -36,12 +36,22 @@ export function validateUuid(uuid: string): boolean {
 }
 
 /**
- * Generate a patient code for testing/demo
+ * Generate a patient code for testing/demo (ENC format)
  */
 export function generateDemoPatientCode(): string {
   const year = new Date().getFullYear();
   const sequence = String(Math.floor(Math.random() * 100000)).padStart(5, '0');
   return `ENC-${year}-${sequence}`;
+}
+
+/**
+ * Generate a patient code (PT format per contract)
+ * Format: PT-<base36 timestamp>-<4 hex chars>
+ */
+export function generatePatientCode(): string {
+  const timestamp = Date.now().toString(36);
+  const random = Math.random().toString(16).substring(2, 6);
+  return `PT-${timestamp}-${random}`;
 }
 
 /**
