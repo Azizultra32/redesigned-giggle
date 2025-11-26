@@ -2,12 +2,12 @@
  * Tabs Component
  *
  * Tab navigation for switching between overlay panels:
- * - Transcript view
- * - Field mapping
- * - Settings
+ * - Live: Real-time transcript view
+ * - Chat: Voice Agent conversation (placeholder)
+ * - History: Consent events log
  */
 
-export type TabId = 'transcript' | 'mapping' | 'settings';
+export type TabId = 'live' | 'chat' | 'history';
 
 interface Tab {
   id: TabId;
@@ -16,15 +16,15 @@ interface Tab {
 }
 
 const TABS: Tab[] = [
-  { id: 'transcript', label: 'Transcript', icon: '📝' },
-  { id: 'mapping', label: 'Mapping', icon: '🎯' },
-  { id: 'settings', label: 'Settings', icon: '⚙️' }
+  { id: 'live', label: 'Live', icon: '🎙️' },
+  { id: 'chat', label: 'Chat', icon: '💬' },
+  { id: 'history', label: 'History', icon: '📋' }
 ];
 
 export class TabsComponent {
   private shadowRoot: ShadowRoot;
   private container: HTMLElement | null = null;
-  private activeTab: TabId = 'transcript';
+  private activeTab: TabId = 'live';
   private onTabChange: (tab: TabId) => void;
 
   constructor(shadowRoot: ShadowRoot, onTabChange: (tab: TabId) => void) {

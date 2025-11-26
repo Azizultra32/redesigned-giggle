@@ -11,14 +11,21 @@ import { TabsComponent } from './ui/tabs';
 import { StatusPills } from './ui/pills';
 import { Bridge } from './bridge';
 
+export interface ConsentEvent {
+  id: string;
+  timestamp: number;
+  phrase: string;
+}
+
 export interface OverlayState {
   isVisible: boolean;
   isRecording: boolean;
   isConnected: boolean;
   isSpeaking: boolean;
   consentLogged: boolean;
-  activeTab: 'transcript' | 'mapping' | 'settings';
+  activeTab: 'live' | 'chat' | 'history';
   transcriptLines: TranscriptLine[];
+  consentEvents: ConsentEvent[];
   patientInfo: PatientInfo | null;
 }
 
@@ -76,8 +83,9 @@ export class FerrariOverlay {
       isConnected: false,
       isSpeaking: false,
       consentLogged: false,
-      activeTab: 'transcript',
+      activeTab: 'live',
       transcriptLines: [],
+      consentEvents: [],
       patientInfo: null
     };
   }
@@ -104,10 +112,20 @@ export class FerrariOverlay {
     });
 
     // Consent logged event
-    this.bridge.on('consent-logged', () => {
-      this.setState({ consentLogged: true });
+    this.bridge.on('consent-logged', (data: { timestamp?: number; phrase?: string } = {}) => {
+      const event: ConsentEvent = {
+        id: `consent_${Date.now()}`,
+        timestamp: data.timestamp || Date.now(),
+        phrase: data.phrase || 'Consent granted'
+      };
+      this.setState({
+        consentLogged: true,
+        consentEvents: [...this.state.consentEvents, event]
+      });
       // Flash the consent badge
       this.flashConsentBadge();
+      // Update history panel
+      this.updateHistoryPanel();
     });
 
     // Keyboard shortcut to toggle overlay
@@ -123,6 +141,33 @@ export class FerrariOverlay {
     if (badge) {
       badge.classList.add('flash');
       setTimeout(() => badge.classList.remove('flash'), 1000);
+    }
+  }
+
+  private updateHistoryPanel(): void {
+    const historyPanel = this.shadowRoot.getElementById('history-panel');
+    if (!historyPanel) return;
+
+    if (this.state.consentEvents.length === 0) {
+      historyPanel.innerHTML = `
+        <div class="empty-state">
+          <span class="empty-icon">📋</span>
+          <p>No Consent Events</p>
+          <p class="empty-hint">Say "Assist, consent granted" to log</p>
+        </div>
+      `;
+    } else {
+      historyPanel.innerHTML = `
+        <div class="consent-list">
+          ${this.state.consentEvents.map(e => `
+            <div class="consent-item">
+              <span class="consent-badge-sm">CONSENT</span>
+              <span class="consent-time">${new Date(e.timestamp).toLocaleTimeString()}</span>
+              <span class="consent-phrase">${e.phrase}</span>
+            </div>
+          `).join('')}
+        </div>
+      `;
     }
   }
 
@@ -251,12 +296,20 @@ export class FerrariOverlay {
       </div>
       <div class="overlay-tabs" id="tabs-container"></div>
       <div class="overlay-content">
-        <div class="tab-panel" id="transcript-panel"></div>
-        <div class="tab-panel hidden" id="mapping-panel">
-          <p>DOM field mapping controls</p>
+        <div class="tab-panel" id="live-panel"></div>
+        <div class="tab-panel hidden" id="chat-panel">
+          <div class="chat-placeholder">
+            <span class="placeholder-icon">💬</span>
+            <p>Voice Agent</p>
+            <p class="placeholder-hint">Say "Assist, help me..." to start</p>
+          </div>
         </div>
-        <div class="tab-panel hidden" id="settings-panel">
-          <p>Settings and configuration</p>
+        <div class="tab-panel hidden" id="history-panel">
+          <div class="empty-state">
+            <span class="empty-icon">📋</span>
+            <p>No Consent Events</p>
+            <p class="empty-hint">Say "Assist, consent granted" to log</p>
+          </div>
         </div>
       </div>
       <div class="overlay-footer" id="control-buttons"></div>
@@ -267,12 +320,12 @@ export class FerrariOverlay {
     // Mount components
     const pillsContainer = this.shadowRoot.getElementById('status-pills');
     const tabsContainer = this.shadowRoot.getElementById('tabs-container');
-    const transcriptPanel = this.shadowRoot.getElementById('transcript-panel');
+    const livePanel = this.shadowRoot.getElementById('live-panel');
     const controlsContainer = this.shadowRoot.getElementById('control-buttons');
 
     if (pillsContainer) this.statusPills.mount(pillsContainer);
     if (tabsContainer) this.tabs.mount(tabsContainer);
-    if (transcriptPanel) this.transcriptView.mount(transcriptPanel);
+    if (livePanel) this.transcriptView.mount(livePanel);
     if (controlsContainer) this.controlButtons.mount(controlsContainer);
 
     // Setup minimize button
@@ -431,6 +484,68 @@ export class FerrariOverlay {
         0% { transform: scale(1); background: #22c55e; }
         50% { transform: scale(1.2); background: #4ade80; }
         100% { transform: scale(1); background: #22c55e; }
+      }
+
+      /* Placeholder and Empty States */
+      .chat-placeholder,
+      .empty-state {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        height: 200px;
+        color: #888;
+        text-align: center;
+      }
+
+      .placeholder-icon,
+      .empty-icon {
+        font-size: 48px;
+        margin-bottom: 12px;
+        opacity: 0.6;
+      }
+
+      .placeholder-hint,
+      .empty-hint {
+        font-size: 12px;
+        color: #666;
+        margin-top: 4px;
+      }
+
+      /* History Panel - Consent List */
+      .consent-list {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+
+      .consent-item {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 12px;
+        background: #232340;
+        border-radius: 6px;
+        font-size: 12px;
+      }
+
+      .consent-badge-sm {
+        background: #22c55e;
+        color: white;
+        padding: 2px 6px;
+        border-radius: 4px;
+        font-size: 9px;
+        font-weight: 600;
+      }
+
+      .consent-time {
+        color: #888;
+        font-size: 11px;
+      }
+
+      .consent-phrase {
+        color: #ccc;
+        flex: 1;
       }
     `;
   }
