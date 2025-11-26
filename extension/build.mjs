@@ -96,16 +96,35 @@ async function build() {
 function copyStaticAssets() {
   console.log('\n📋 Copying static assets...');
 
-  // Create icons directory
-  const iconsDir = join(__dirname, 'icons');
-  const distIconsDir = join(distDir, '../icons');
-
-  if (!existsSync(distIconsDir)) {
-    mkdirSync(distIconsDir, { recursive: true });
+  // Copy manifest.json to dist
+  const manifestSrc = join(__dirname, 'manifest.json');
+  const manifestDest = join(distDir, 'manifest.json');
+  if (existsSync(manifestSrc)) {
+    copyFileSync(manifestSrc, manifestDest);
+    console.log('✅ manifest.json copied');
   }
 
-  // Note: Icons would need to be created separately
-  // For now, we'll just ensure the directory exists
+  // Create assets directory in dist
+  const distAssetsDir = join(distDir, 'assets');
+  if (!existsSync(distAssetsDir)) {
+    mkdirSync(distAssetsDir, { recursive: true });
+  }
+
+  // Copy icons from extension/assets/ if they exist
+  const assetsSrc = join(__dirname, 'assets');
+  if (existsSync(assetsSrc)) {
+    const icons = ['icon16.png', 'icon32.png', 'icon48.png', 'icon128.png'];
+    for (const icon of icons) {
+      const src = join(assetsSrc, icon);
+      const dest = join(distAssetsDir, icon);
+      if (existsSync(src)) {
+        copyFileSync(src, dest);
+      }
+    }
+    console.log('✅ Icons copied to dist/assets/');
+  } else {
+    console.log('⚠️  No assets/ folder found - icons need to be added');
+  }
 
   console.log('✅ Static assets copied');
 }

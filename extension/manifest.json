@@ -1,12 +1,13 @@
 {
   "manifest_version": 3,
-  "name": "GHOST-NEXT Ferrari Overlay",
+  "name": "AssistMD Ghost",
   "version": "1.0.0",
   "description": "Voice-powered clinical documentation overlay with real-time transcription",
   "permissions": [
     "activeTab",
     "storage",
-    "tabs"
+    "tabs",
+    "scripting"
   ],
   "host_permissions": [
     "<all_urls>"
@@ -15,7 +16,6 @@
     {
       "matches": ["<all_urls>"],
       "js": ["content.js"],
-      "css": [],
       "run_at": "document_idle"
     }
   ],
@@ -25,12 +25,12 @@
   },
   "web_accessible_resources": [
     {
-      "resources": ["overlay.js", "assets/*", "styles/*"],
+      "resources": ["assets/*"],
       "matches": ["<all_urls>"]
     }
   ],
   "action": {
-    "default_title": "GHOST-NEXT Overlay",
+    "default_title": "AssistMD Ghost - Toggle Overlay (Alt+G)",
     "default_icon": {
       "16": "assets/icon16.png",
       "32": "assets/icon32.png",
