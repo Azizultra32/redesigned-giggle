@@ -19,6 +19,10 @@ import {
   updatePatientInfo,
   TranscriptChunk
 } from '../supabase/queries.js';
+import { VAD, createEmergencyBroadcast } from '../audio/vad.js';
+import { VoiceConcierge, createCommandBroadcast } from '../lib/voiceConcierge.js';
+import { Autopilot, createAutopilotBroadcast } from '../lib/autopilot.js';
+import { ErrorHandler, createError, createErrorBroadcast, parseDeepgramError, ERROR_CODES } from '../lib/errors.js';
 
 export interface Session {
   ws: WebSocket;
@@ -39,12 +43,44 @@ export class WebSocketBroker {
   private config: BrokerConfig;
   private saveTimers: Map<number, NodeJS.Timeout> = new Map();
 
+  // PATH J/K/L modules
+  private vad: VAD;
+  private voiceConcierge: VoiceConcierge;
+  private autopilot: Autopilot;
+  private errorHandler: ErrorHandler;
+
   constructor(wss: WebSocketServer, config?: Partial<BrokerConfig>) {
     this.wss = wss;
     this.config = {
       saveInterval: 5000,
       ...config
     };
+
+    // Initialize VAD for emergency detection (PATH K - Feed C)
+    this.vad = new VAD({
+      onEmergency: (alert) => {
+        console.log('[Broker] Emergency detected:', alert.phrase);
+        this.broadcast(createEmergencyBroadcast(alert));
+      }
+    });
+
+    // Initialize Voice Concierge (PATH L - Feed B)
+    this.voiceConcierge = new VoiceConcierge({
+      onCommand: (cmd) => {
+        console.log('[Broker] Voice command:', cmd.command);
+        this.broadcast(createCommandBroadcast(cmd));
+      }
+    });
+
+    // Initialize Autopilot (PATH J - Feed D)
+    this.autopilot = new Autopilot((state) => {
+      this.broadcast(createAutopilotBroadcast(state));
+    });
+
+    // Initialize Error Handler (PATH O - Feed A)
+    this.errorHandler = new ErrorHandler((error) => {
+      this.broadcast(createErrorBroadcast(error));
+    });
 
     this.wss.on('connection', this.handleConnection.bind(this));
     console.log('[Broker] WebSocket broker initialized');
@@ -112,6 +148,15 @@ export class WebSocketBroker {
         await this.setPatient(session, message);
         break;
 
+      case 'command':
+        await this.handleActionCommand(session, message);
+        break;
+
+      case 'dom_map_result':
+        // PATH J: Feed DOM map to autopilot
+        this.autopilot.ingestDOMMap(message.fields || []);
+        break;
+
       case 'ping':
         this.send(ws, { type: 'pong', timestamp: Date.now() });
         break;
@@ -142,7 +187,11 @@ export class WebSocketBroker {
       session.deepgram = new DeepgramConsumer({
         onTranscript: (event) => this.handleTranscript(session, event),
         onChunk: (chunk) => this.handleChunk(session, chunk),
-        onError: (error) => this.send(ws, { type: 'error', error: error.message }),
+        onError: (error) => {
+          // PATH O: Use error handler for Deepgram errors
+          const layerError = parseDeepgramError(error);
+          this.errorHandler.handle(layerError);
+        },
         onClose: () => this.send(ws, { type: 'deepgram_closed' })
       });
 
@@ -222,6 +271,69 @@ export class WebSocketBroker {
     }
   }
 
+  /**
+   * PATH I: Command Pipeline - handle map/fill/undo/send/dictate
+   */
+  private async handleActionCommand(session: Session, message: any): Promise<void> {
+    const { ws } = session;
+    const action = message.action;
+
+    console.log(`[Broker] Command received: ${action}`);
+
+    switch (action) {
+      case 'map':
+        // Request DOM mapping from extension
+        this.send(ws, {
+          type: 'command_request',
+          action: 'map',
+          feed: 'D' // Autopilot feed
+        });
+        break;
+
+      case 'fill':
+        // Execute smart fill with provided steps
+        this.send(ws, {
+          type: 'command_request',
+          action: 'fill',
+          steps: message.steps || [],
+          feed: 'D'
+        });
+        break;
+
+      case 'undo':
+        // Request undo of last fill operation
+        this.send(ws, {
+          type: 'command_request',
+          action: 'undo',
+          feed: 'D'
+        });
+        break;
+
+      case 'send':
+        // Finalize and send form
+        this.send(ws, {
+          type: 'command_request',
+          action: 'send',
+          feed: 'D'
+        });
+        break;
+
+      case 'dictate':
+        // Enable direct dictation mode to focused field
+        this.send(ws, {
+          type: 'command_request',
+          action: 'dictate',
+          targetField: message.targetField,
+          feed: 'B' // Voice command feed
+        });
+        break;
+
+      default:
+        console.warn(`[Broker] Unknown action: ${action}`);
+        this.send(ws, { type: 'error', error: `Unknown action: ${action}` });
+    }
+  }
+
   private handleTranscript(session: Session, event: TranscriptEvent): void {
     // Send to extension for display
     this.send(session.ws, {
@@ -232,6 +344,16 @@ export class WebSocketBroker {
       start: event.start,
       end: event.end
     });
+
+    // PATH K: Check for emergency phrases (Feed C)
+    if (event.isFinal) {
+      this.vad.analyzeTranscript(event.text);
+    }
+
+    // PATH L: Check for voice commands (Feed B)
+    if (event.isFinal) {
+      this.voiceConcierge.analyzeTranscript(event.text);
+    }
   }
 
   private handleChunk(session: Session, chunk: AggregatedChunk): void {

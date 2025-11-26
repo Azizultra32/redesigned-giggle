@@ -1,130 +1,86 @@
 #!/bin/bash
+#
+# MCP Boot Script (PATH N)
+#
+# Launches Chrome with extension for MCP automation.
+# Usage: ./scripts/start-mcp.sh [target_url]
+#
+
 set -e
 
-echo "═══════════════════════════════════════════════════════════"
-echo "        AssistMD Truth Package - MCP BOOT                   "
-echo "═══════════════════════════════════════════════════════════"
-
 # Configuration
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-ROOT_DIR="$(dirname "$SCRIPT_DIR")"
-PROFILE_DIR="/tmp/assistmd-chrome-profile"
-EXTENSION_DIR="$ROOT_DIR/apps/overlay"
-BACKEND_DIR="$ROOT_DIR/apps/cns-agent"
+CHROME_PROFILE="mcp-dev-profile"
+CHROME_DATA_DIR="${HOME}/.config/chrome-mcp"
+EXTENSION_DIR="$(dirname "$0")/../extension/dist-bundle"
+DEBUG_PORT=9222
+TARGET_URL="${1:-http://localhost:3000}"
 
-# Colors
-GREEN='\033[0;32m'
-RED='\033[0;31m'
-YELLOW='\033[1;33m'
-NC='\033[0m'
+echo "========================================="
+echo "  AssistMD MCP Boot"
+echo "========================================="
 
-check() {
-  if [ $? -eq 0 ]; then
-    echo -e "${GREEN}✓${NC} $1"
-  else
-    echo -e "${RED}✗${NC} $1"
-    exit 1
-  fi
-}
-
-warn() {
-  echo -e "${YELLOW}!${NC} $1"
-}
-
-# 1. Pre-flight checks
-echo ""
-echo "▶ Pre-flight checks..."
-
-node --version >/dev/null 2>&1
-check "Node.js installed"
-
-[ -f "$EXTENSION_DIR/package.json" ]
-check "Extension package.json exists"
-
-# 2. Build extension
-echo ""
-echo "▶ Building extension..."
-
-cd "$EXTENSION_DIR"
-if npm run build >/dev/null 2>&1; then
-  check "Extension built"
-else
-  echo -e "${RED}✗${NC} Extension build failed"
-  exit 1
-fi
-
-[ -f "$EXTENSION_DIR/content.js" ]
-check "content.js exists"
-
-# 3. Check backend
-echo ""
-echo "▶ Checking backend..."
-
-if curl -s http://localhost:3001/health >/dev/null 2>&1; then
-  check "Backend running on port 3001"
-else
-  warn "Backend not running. Starting backend..."
-  cd "$BACKEND_DIR"
-  npm run dev > /tmp/cns-agent.log 2>&1 &
-  sleep 3
-  if curl -s http://localhost:3001/health >/dev/null 2>&1; then
-    check "Backend started successfully"
-  else
-    warn "Backend failed to start. Check /tmp/cns-agent.log"
-  fi
-fi
-
-# 4. Launch Chrome
-echo ""
-echo "▶ Launching Chrome..."
-
-# Kill existing Chrome with our profile
-pkill -f "user-data-dir=$PROFILE_DIR" 2>/dev/null || true
+# Kill existing Chrome dev profile
+echo "[MCP] Killing existing Chrome instances..."
+pkill -f "chrome.*${CHROME_PROFILE}" 2>/dev/null || true
 sleep 1
 
-# Find Chrome
-CHROME=""
-for path in \
-  "/usr/bin/google-chrome" \
-  "/usr/bin/google-chrome-stable" \
-  "/usr/bin/chromium" \
-  "/usr/bin/chromium-browser" \
-  "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
-  "$(which google-chrome 2>/dev/null)" \
-  "$(which chromium 2>/dev/null)"
-do
-  if [ -x "$path" ]; then
-    CHROME="$path"
-    break
-  fi
-done
-
-if [ -z "$CHROME" ]; then
-  echo -e "${RED}✗${NC} Chrome not found"
-  exit 1
+# Build extension if needed
+if [ ! -d "$EXTENSION_DIR" ]; then
+  echo "[MCP] Building extension..."
+  cd "$(dirname "$0")/../extension"
+  npm run build 2>/dev/null || node build.mjs
+  cd - > /dev/null
 fi
 
-check "Chrome found"
+# Launch Chrome with debugging
+echo "[MCP] Launching Chrome..."
+echo "  Profile: ${CHROME_PROFILE}"
+echo "  Debug Port: ${DEBUG_PORT}"
+echo "  Target: ${TARGET_URL}"
 
-# Launch
-"$CHROME" \
-  --load-extension="$EXTENSION_DIR" \
-  --user-data-dir="$PROFILE_DIR" \
+google-chrome \
+  --user-data-dir="${CHROME_DATA_DIR}" \
+  --profile-directory="${CHROME_PROFILE}" \
+  --remote-debugging-port=${DEBUG_PORT} \
+  --load-extension="${EXTENSION_DIR}" \
   --no-first-run \
-  --disable-default-apps \
-  "http://localhost:3000" 2>/dev/null &
+  --no-default-browser-check \
+  --disable-sync \
+  "${TARGET_URL}" &
 
-sleep 2
-check "Chrome launched"
+CHROME_PID=$!
+echo "[MCP] Chrome PID: ${CHROME_PID}"
+
+# Wait for Chrome to start
+sleep 3
+
+# Verify extension is loaded
+echo "[MCP] Verifying extension..."
+EXTENSIONS_URL="http://localhost:${DEBUG_PORT}/json/list"
+if curl -s "${EXTENSIONS_URL}" | grep -q "AssistMD"; then
+  echo "[MCP] Extension loaded successfully"
+else
+  echo "[MCP] Warning: Extension may not be loaded"
+fi
+
+# Run MCP helper if available
+MCP_HELPER="$(dirname "$0")/mcp-helper.mjs"
+if [ -f "$MCP_HELPER" ]; then
+  echo "[MCP] Running MCP helper..."
+  node "$MCP_HELPER" --port=${DEBUG_PORT}
+fi
 
 echo ""
-echo "═══════════════════════════════════════════════════════════"
-echo "  MCP Boot Complete!"
+echo "========================================="
+echo "  MCP Ready"
+echo "========================================="
+echo "  Chrome PID:    ${CHROME_PID}"
+echo "  Debug Port:    ${DEBUG_PORT}"
+echo "  DevTools:      http://localhost:${DEBUG_PORT}"
+echo "  Target:        ${TARGET_URL}"
+echo "========================================="
 echo ""
-echo "  Extension: $EXTENSION_DIR"
-echo "  Profile:   $PROFILE_DIR"
-echo ""
-echo "  Shortcuts:"
-echo "    Alt+G  - Toggle overlay"
-echo "    Alt+R  - Start/stop recording"
-echo "═══════════════════════════════════════════════════════════"
+echo "Press Ctrl+C to stop Chrome"
+
+# Wait for Chrome to exit
+wait ${CHROME_PID}
