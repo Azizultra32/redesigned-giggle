@@ -1,0 +1,42 @@
+{
+  "manifest_version": 3,
+  "name": "AssistMD Ghost Overlay (MVP)",
+  "version": "1.0.0",
+  "description": "Voice-powered clinical documentation overlay with real-time transcription",
+  "permissions": [
+    "scripting",
+    "activeTab",
+    "storage",
+    "tabs"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "dist/content.js"
+      ],
+      "css": [],
+      "run_at": "document_idle"
+    }
+  ],
+  "background": {
+    "service_worker": "dist/background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "AssistMD Ghost Overlay"
+  },
+  "commands": {
+    "_execute_action": {
+      "suggested_key": {
+        "default": "Alt+G"
+      },
+      "description": "Toggle overlay visibility"
+    }
+  }
+}

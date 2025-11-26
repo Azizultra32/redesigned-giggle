@@ -1,0 +1,155 @@
+================================================================================
+                       GHOST-NEXT PATH MAP MASTER
+================================================================================
+
+                        REPOSITORY STRUCTURE
+================================================================================
+
+ghost-next/
+├── README.md                           Project overview
+├── .gitignore                          Git ignore rules
+│
+├── backend/                            Backend server
+│   ├── server.ts                       Main entry point
+│   ├── package.json                    Dependencies
+│   ├── tsconfig.json                   TypeScript config
+│   ├── .env.example                    Environment template
+│   │
+│   ├── supabase/                       Database layer
+│   │   ├── client.ts                   Supabase client singleton
+│   │   └── queries.ts                  Database operations
+│   │
+│   ├── audio/                          Audio processing
+│   │   └── deepgram-consumer.ts        Deepgram streaming
+│   │
+│   ├── ws/                             WebSocket handling
+│   │   └── broker.ts                   Session management
+│   │
+│   └── utils/                          Utilities
+│       ├── diarization.ts              Chunk aggregation
+│       ├── patient.ts                  Patient info handling
+│       └── dom.ts                      DOM utilities
+│
+├── extension/                          Chrome extension
+│   ├── manifest.json                   MV3 manifest
+│   ├── content.js                      Content script + overlay
+│   ├── overlay.js                      Overlay components
+│   ├── background.js                   Service worker
+│   ├── assets/                         Icons and images
+│   └── styles/                         CSS files
+│
+├── supabase/                           Database schemas
+│   ├── transcripts2-schema.sql         Main table schema
+│   ├── rls-policies.sql                Row level security
+│   └── seed.sql                        Sample data
+│
+├── docs/                               Documentation
+│   ├── TRUTH_PACKAGE.md                Master truth document
+│   │
+│   ├── architecture/                   System architecture
+│   │   ├── SYSTEM_MAP.txt              Full system overview
+│   │   ├── SUPABASE_SCHEMA.md          Database schema
+│   │   ├── DEEPGRAM_PIPELINE.md        Audio processing
+│   │   ├── OVERLAY_SYSTEM.md           Extension UI
+│   │   ├── AGENTS.md                   Backend agents
+│   │   ├── COMMAND_FLOW.md             WebSocket protocol
+│   │   ├── WEB_SOCKET_MAP.md           WS endpoints
+│   │   ├── MCP_STACK.md                MCP integration
+│   │   ├── DOM_MAPPING.md              DOM interaction
+│   │   └── ERROR_MODEL.md              Error handling
+│   │
+│   ├── workflows/                      How-to guides
+│   │   ├── start_system.md             System startup
+│   │   ├── restart_agent.md            Agent restart
+│   │   └── debug_audio.md              Audio debugging
+│   │
+│   ├── specs/                          Specifications
+│   │   ├── overlay-spec.md             Overlay spec
+│   │   ├── agent-spec.md               Agent spec
+│   │   ├── diarization-spec.md         Diarization spec
+│   │   ├── supabase-spec.md            Database spec
+│   │   ├── autopilot-spec.md           Autopilot spec
+│   │   └── system-contracts.md         API contracts
+│   │
+│   └── diagrams/                       Visual diagrams
+│       ├── PATH_MAP_MASTER.txt         This file
+│       ├── OVERLAY_PATH.txt            Overlay flow
+│       ├── AGENT_PATH.txt              Agent flow
+│       ├── SUPABASE_PATH.txt           Database flow
+│       ├── DEEPGRAM_PATH.txt           Audio flow
+│       └── MCP_PATH.txt                MCP flow
+│
+└── scripts/                            Utility scripts
+    ├── start-mcp.sh                    Start Chrome with extension
+    ├── build-extension.mjs             Build extension
+    ├── reset-profile.sh                Reset Chrome profile
+    └── smoke-test.sh                   Basic system test
+
+
+================================================================================
+                         DATA FLOW PATHS
+================================================================================
+
+    Audio Recording Path:
+    ─────────────────────
+
+    Browser Mic → AudioContext → ScriptProcessor → PCM Buffer
+                                                      │
+                                                      ▼
+    WebSocket (/ws) ←────────────────────────────────┘
+         │
+         ▼
+    Backend Broker → Deepgram Consumer → Deepgram API
+                          │
+                          ▼
+                    Transcript Events
+                          │
+         ┌────────────────┼────────────────┐
+         │                │                │
+         ▼                ▼                ▼
+    Extension       Chunk Aggregator   Supabase
+    (display)       (accumulate)       (persist)
+
+
+    Command Path:
+    ─────────────
+
+    Extension UI → WebSocket Message → Broker → Handler
+                                                  │
+                        ┌─────────────────────────┤
+                        │                         │
+                        ▼                         ▼
+                   Start Recording           Stop Recording
+                        │                         │
+                        ▼                         ▼
+                   Create Run               Complete Run
+                        │                         │
+                        ▼                         ▼
+                   Deepgram Connect        Deepgram Disconnect
+                        │                         │
+                        ▼                         ▼
+                   Stream Audio              Flush Chunks
+
+
+================================================================================
+                        FILE DEPENDENCIES
+================================================================================
+
+    backend/server.ts
+    └── imports
+        ├── ws/broker.ts
+        │   └── imports
+        │       ├── audio/deepgram-consumer.ts
+        │       │   └── imports utils/diarization.ts
+        │       └── supabase/queries.ts
+        │           └── imports supabase/client.ts
+        └── utils/patient.ts
+
+
+    extension/content.js
+    └── injects
+        └── Shadow DOM overlay
+            └── connects to ws://localhost:3001/ws
+
+
+================================================================================

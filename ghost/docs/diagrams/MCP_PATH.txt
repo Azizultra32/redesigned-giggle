@@ -1,0 +1,254 @@
+================================================================================
+                         MCP PATH DIAGRAM
+================================================================================
+
+                       MCP OVERVIEW
+================================================================================
+
+    MCP (Model Context Protocol) Role:
+    ───────────────────────────────────
+
+    ┌─────────────────────────────────────────────────────────────────────────┐
+    │                                                                         │
+    │    Claude Code / AI Agent                                               │
+    │         │                                                               │
+    │         │ MCP Protocol                                                  │
+    │         ▼                                                               │
+    │    ┌─────────────────────┐                                              │
+    │    │    MCP Server       │                                              │
+    │    │  (puppeteer, etc.)  │                                              │
+    │    └──────────┬──────────┘                                              │
+    │               │                                                         │
+    │               │ Browser Control                                         │
+    │               ▼                                                         │
+    │    ┌─────────────────────┐                                              │
+    │    │   Chrome Browser    │                                              │
+    │    │  + GHOST Extension  │                                              │
+    │    └─────────────────────┘                                              │
+    │                                                                         │
+    └─────────────────────────────────────────────────────────────────────────┘
+
+
+================================================================================
+                    DEVELOPMENT WORKFLOW
+================================================================================
+
+    Setup Flow:
+    ───────────
+
+    1. Configure MCP Server
+         │
+         ▼
+    ┌─────────────────────────────────────────────────────────────┐
+    │  ~/.config/claude-code/settings.json                        │
+    │  {                                                          │
+    │    "mcpServers": {                                          │
+    │      "chrome-extension": {                                  │
+    │        "command": "npx",                                    │
+    │        "args": ["@anthropic-ai/mcp-server-puppeteer"],     │
+    │        "env": {                                             │
+    │          "CHROME_PATH": "/path/to/chrome",                 │
+    │          "HEADLESS": "false"                                │
+    │        }                                                    │
+    │      }                                                      │
+    │    }                                                        │
+    │  }                                                          │
+    └─────────────────────────────────────────────────────────────┘
+         │
+         ▼
+    2. Start Backend Server
+         │
+         ▼
+    ┌─────────────────────────────────────────────────────────────┐
+    │  cd backend && npm run dev                                  │
+    │                                                             │
+    │  Server running on port 3001                               │
+    └─────────────────────────────────────────────────────────────┘
+         │
+         ▼
+    3. Launch Chrome with Extension
+         │
+         ▼
+    ┌─────────────────────────────────────────────────────────────┐
+    │  ./scripts/start-mcp.sh                                     │
+    │                                                             │
+    │  Chrome launched with:                                      │
+    │  - Custom profile directory                                │
+    │  - Extension loaded                                         │
+    │  - Developer mode                                           │
+    └─────────────────────────────────────────────────────────────┘
+
+
+================================================================================
+                    MCP TOOL CAPABILITIES
+================================================================================
+
+    Available Tools:
+    ────────────────
+
+    ┌─────────────────────────────────────────────────────────────────────────┐
+    │  Tool              │ Description                                        │
+    ├────────────────────┼────────────────────────────────────────────────────┤
+    │  navigate          │ Go to URL                                          │
+    │  screenshot        │ Capture page screenshot                            │
+    │  evaluate          │ Execute JavaScript in page                         │
+    │  click             │ Click element by selector                          │
+    │  type              │ Type text into element                             │
+    │  waitForSelector   │ Wait for element to appear                         │
+    └─────────────────────────────────────────────────────────────────────────┘
+
+
+    Extension Testing Examples:
+    ───────────────────────────
+
+    Check overlay exists:
+    ┌─────────────────────────────────────────────────────────────┐
+    │  await mcp.browser.evaluate(`                               │
+    │    document.getElementById('ghost-overlay-root') !== null  │
+    │  `)                                                         │
+    │  // Returns: true                                           │
+    └─────────────────────────────────────────────────────────────┘
+
+    Trigger recording:
+    ┌─────────────────────────────────────────────────────────────┐
+    │  await mcp.browser.evaluate(`                               │
+    │    const root = document.getElementById('ghost-overlay-root');
+    │    const shadow = root.shadowRoot;                         │
+    │    shadow.getElementById('recordBtn').click();             │
+    │  `)                                                         │
+    └─────────────────────────────────────────────────────────────┘
+
+    Check connection status:
+    ┌─────────────────────────────────────────────────────────────┐
+    │  await mcp.browser.evaluate(`                               │
+    │    const root = document.getElementById('ghost-overlay-root');
+    │    const shadow = root.shadowRoot;                         │
+    │    shadow.getElementById('status').textContent;            │
+    │  `)                                                         │
+    │  // Returns: "Connected" or "Disconnected"                  │
+    └─────────────────────────────────────────────────────────────┘
+
+
+================================================================================
+                     CHROME PROFILE PATH
+================================================================================
+
+    Profile Management:
+    ───────────────────
+
+    Default Profile Location:
+    .chrome-profile/
+
+    Contents:
+    ├── Default/
+    │   ├── Extensions/          <── Extension installed here
+    │   ├── Preferences
+    │   └── ...
+    └── ...
+
+
+    Reset Profile:
+    ──────────────
+
+    ./scripts/reset-profile.sh
+         │
+         ▼
+    ┌─────────────────────────────────────────────────────────────┐
+    │  rm -rf .chrome-profile                                     │
+    │  # Clears all browser state                                 │
+    │  # Extension will be re-loaded on next start               │
+    └─────────────────────────────────────────────────────────────┘
+
+
+================================================================================
+                    EXTENSION RELOAD PATH
+================================================================================
+
+    Code Change Flow:
+    ─────────────────
+
+    1. Modify extension code
+         │
+         ▼
+    2. Reload extension
+         │
+         ├── Option A: chrome://extensions → Reload button
+         │
+         ├── Option B: Reset profile + restart Chrome
+         │
+         └── Option C: Programmatic reload (future)
+         │
+         ▼
+    3. Refresh target page
+         │
+         ▼
+    4. Content script re-injects
+         │
+         ▼
+    5. Test changes
+
+
+================================================================================
+                    DEBUGGING WITH MCP
+================================================================================
+
+    Debug Workflow:
+    ───────────────
+
+    ┌─────────────────────────────────────────────────────────────┐
+    │  1. Navigate to page                                        │
+    │     await mcp.browser.navigate('https://example.com')      │
+    │                                                             │
+    │  2. Wait for extension                                      │
+    │     await mcp.browser.waitForSelector('#ghost-overlay-root')│
+    │                                                             │
+    │  3. Take screenshot                                         │
+    │     await mcp.browser.screenshot()                         │
+    │                                                             │
+    │  4. Check console logs                                      │
+    │     await mcp.browser.evaluate('console.log(...)')         │
+    │                                                             │
+    │  5. Inspect DOM                                             │
+    │     await mcp.browser.evaluate('document.body.innerHTML') │
+    └─────────────────────────────────────────────────────────────┘
+
+
+    Common Debug Commands:
+    ──────────────────────
+
+    Get extension manifest:
+    chrome.runtime.getManifest()
+
+    Check content script loaded:
+    typeof window.__ghostState
+
+    Check WebSocket state:
+    window.__ghostWs?.readyState
+
+    Get audio context state:
+    window.__ghostAudioContext?.state
+
+
+================================================================================
+                    PRODUCTION NOTES
+================================================================================
+
+    MCP is Development Only:
+    ────────────────────────
+
+    ┌─────────────────────────────────────────────────────────────┐
+    │  ⚠️  MCP tools are for development and testing only        │
+    │                                                             │
+    │  Production extensions:                                     │
+    │  - Distributed via Chrome Web Store                        │
+    │  - No MCP dependency                                        │
+    │  - Standard Chrome extension lifecycle                     │
+    │                                                             │
+    │  MCP use cases:                                             │
+    │  - Automated testing                                        │
+    │  - Development debugging                                    │
+    │  - AI-assisted development                                 │
+    └─────────────────────────────────────────────────────────────┘
+
+
+================================================================================

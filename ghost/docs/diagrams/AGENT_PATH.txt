@@ -1,0 +1,247 @@
+================================================================================
+                        AGENT PATH DIAGRAM
+================================================================================
+
+                        SERVER STARTUP
+================================================================================
+
+    npm run dev
+         │
+         ▼
+    Load Environment (.env)
+         │
+         ├── PORT
+         ├── DEEPGRAM_API_KEY
+         ├── SUPABASE_URL
+         └── SUPABASE_SERVICE_ROLE_KEY
+         │
+         ▼
+    Create Express App
+         │
+         ├── CORS middleware
+         ├── JSON parser
+         └── Route handlers
+         │
+         ▼
+    Create HTTP Server
+         │
+         ▼
+    Create WebSocket Server
+         │
+         ├── Path: /ws
+         └── Path: /audio-stream
+         │
+         ▼
+    Initialize Broker
+         │
+         ▼
+    server.listen(PORT)
+         │
+         ▼
+    ┌────────────────────────────────────┐
+    │  GHOST-NEXT Backend Server         │
+    │  Port: 3001                        │
+    │  WebSocket: ws://localhost:3001/ws │
+    │  Health: http://localhost:3001/health
+    └────────────────────────────────────┘
+
+
+================================================================================
+                     CONNECTION HANDLING
+================================================================================
+
+    WebSocket Connection:
+    ─────────────────────
+
+    Client Connects (ws://localhost:3001/ws?userId=xxx)
+         │
+         ▼
+    wss.on('connection', ...)
+         │
+         ├── Parse URL query params
+         │   └── Extract userId
+         │
+         ├── Create Session
+         │   ┌─────────────────────────┐
+         │   │ Session {               │
+         │   │   ws: WebSocket         │
+         │   │   userId: string        │
+         │   │   transcriptId: null    │
+         │   │   deepgram: null        │
+         │   │   pendingChunks: []     │
+         │   │   isRecording: false    │
+         │   │ }                       │
+         │   └─────────────────────────┘
+         │
+         ├── sessions.set(ws, session)
+         │
+         └── Send { type: 'connected' }
+
+
+================================================================================
+                     MESSAGE ROUTING
+================================================================================
+
+    Incoming Message:
+    ─────────────────
+
+    ws.on('message', data)
+         │
+         ├── Binary? ─── Yes ──► deepgram.sendAudio(data)
+         │
+         └── No (JSON)
+              │
+              ▼
+         Parse JSON
+              │
+              ▼
+         Switch (message.type)
+              │
+              ├── 'start_recording' ──► startRecording()
+              │         │
+              │         ├── createTranscriptRun()
+              │         ├── new DeepgramConsumer()
+              │         ├── deepgram.connect()
+              │         ├── Start save timer
+              │         └── Send { type: 'recording_started' }
+              │
+              ├── 'stop_recording' ──► stopRecording()
+              │         │
+              │         ├── deepgram.disconnect()
+              │         ├── Stop save timer
+              │         ├── savePendingChunks()
+              │         ├── updateTranscriptRun()
+              │         └── Send { type: 'recording_stopped' }
+              │
+              ├── 'set_patient' ──► setPatient()
+              │         │
+              │         ├── updatePatientInfo()
+              │         └── Send { type: 'patient_set' }
+              │
+              └── 'ping' ──► Send { type: 'pong' }
+
+
+================================================================================
+                     DEEPGRAM INTEGRATION
+================================================================================
+
+    DeepgramConsumer Lifecycle:
+    ───────────────────────────
+
+    new DeepgramConsumer(config)
+         │
+         ├── onTranscript callback
+         ├── onChunk callback
+         ├── onError callback
+         └── onClose callback
+         │
+         ▼
+    connect()
+         │
+         ├── createClient(apiKey)
+         │
+         └── client.listen.live({
+              model: 'nova-2',
+              diarize: true,
+              interim_results: true,
+              sample_rate: 16000,
+              ...
+            })
+         │
+         ▼
+    Connection Open
+         │
+         ▼
+    Event Handlers
+         │
+         ├── Transcript ──► handleTranscript()
+         │                       │
+         │                       ├── Parse alternatives
+         │                       ├── Get dominant speaker
+         │                       ├── Build TranscriptEvent
+         │                       ├── config.onTranscript()
+         │                       └── if final: aggregator.addWords()
+         │
+         ├── UtteranceEnd ──► aggregator.forceFlush()
+         │
+         ├── Error ──► config.onError()
+         │
+         └── Close ──► config.onClose()
+
+
+================================================================================
+                     CHUNK AGGREGATION
+================================================================================
+
+    ChunkAggregator Flow:
+    ─────────────────────
+
+    addWords(words[])
+         │
+         ▼
+    For each word:
+         │
+         ├── No current chunk?
+         │   └── startNewChunk(word)
+         │
+         └── Has current chunk
+              │
+              ├── Speaker changed?
+              │   OR Duration > 30s?
+              │        │
+              │        ├── Yes ──► flush()
+              │        │           └── onChunkComplete(chunk)
+              │        │                    │
+              │        │           startNewChunk(word)
+              │        │
+              │        └── No ──► appendWord(word)
+              │
+              └── Update chunk.end = word.end
+
+
+    Chunk Output:
+    ─────────────
+
+    {
+      speaker: 0,
+      text: "Hello, how are you?",
+      start: 0.0,
+      end: 2.5,
+      word_count: 4,
+      raw: [...]
+    }
+         │
+         ▼
+    onChunk callback
+         │
+         ▼
+    pendingChunks.push(chunk)
+         │
+         ▼
+    (Saved to Supabase on timer or stop)
+
+
+================================================================================
+                     SESSION CLEANUP
+================================================================================
+
+    WebSocket Close:
+    ────────────────
+
+    ws.on('close')
+         │
+         ▼
+    handleClose(ws)
+         │
+         ├── Get session
+         │
+         ├── Disconnect Deepgram
+         │
+         ├── Stop save timer
+         │
+         ├── Save pending chunks
+         │
+         └── sessions.delete(ws)
+
+
+================================================================================
