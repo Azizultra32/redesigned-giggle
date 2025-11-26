@@ -15,6 +15,8 @@ export interface OverlayState {
   isVisible: boolean;
   isRecording: boolean;
   isConnected: boolean;
+  isSpeaking: boolean;
+  consentLogged: boolean;
   activeTab: 'transcript' | 'mapping' | 'settings';
   transcriptLines: TranscriptLine[];
   patientInfo: PatientInfo | null;
@@ -72,6 +74,8 @@ export class FerrariOverlay {
       isVisible: true,
       isRecording: false,
       isConnected: false,
+      isSpeaking: false,
+      consentLogged: false,
       activeTab: 'transcript',
       transcriptLines: [],
       patientInfo: null
@@ -92,12 +96,34 @@ export class FerrariOverlay {
       this.setState({ patientInfo: info });
     });
 
+    // VAD: Speech detection feedback
+    this.bridge.on('audio-status', (status: { speaking?: boolean; recording?: boolean }) => {
+      if (status.speaking !== undefined) {
+        this.setState({ isSpeaking: status.speaking });
+      }
+    });
+
+    // Consent logged event
+    this.bridge.on('consent-logged', () => {
+      this.setState({ consentLogged: true });
+      // Flash the consent badge
+      this.flashConsentBadge();
+    });
+
     // Keyboard shortcut to toggle overlay
     document.addEventListener('keydown', (e) => {
       if (e.altKey && e.key === 'g') {
         this.toggleVisibility();
       }
     });
+  }
+
+  private flashConsentBadge(): void {
+    const badge = this.shadowRoot.querySelector('.consent-badge');
+    if (badge) {
+      badge.classList.add('flash');
+      setTimeout(() => badge.classList.remove('flash'), 1000);
+    }
   }
 
   private handleControlAction(action: string): void {
@@ -175,16 +201,31 @@ export class FerrariOverlay {
   private updateUI(): void {
     this.controlButtons.update({
       isRecording: this.state.isRecording,
-      isConnected: this.state.isConnected
+      isConnected: this.state.isConnected,
+      isSpeaking: this.state.isSpeaking
     });
 
     this.statusPills.update({
       isConnected: this.state.isConnected,
       isRecording: this.state.isRecording,
+      isSpeaking: this.state.isSpeaking,
+      consentLogged: this.state.consentLogged,
       patientInfo: this.state.patientInfo
     });
 
     this.tabs.setActiveTab(this.state.activeTab);
+
+    // Update VAD glow on record button
+    const recordBtn = this.shadowRoot.querySelector('.record-btn');
+    if (recordBtn) {
+      recordBtn.classList.toggle('speaking', this.state.isSpeaking && this.state.isRecording);
+    }
+
+    // Update consent badge visibility
+    const consentBadge = this.shadowRoot.getElementById('consent-badge');
+    if (consentBadge) {
+      consentBadge.classList.toggle('visible', this.state.consentLogged);
+    }
   }
 
   private render(): void {
@@ -201,6 +242,7 @@ export class FerrariOverlay {
         <div class="overlay-title">
           <span class="logo">🏎️</span>
           <span>GHOST-NEXT</span>
+          <span class="consent-badge" id="consent-badge">CONSENT</span>
         </div>
         <div class="header-pills" id="status-pills"></div>
         <div class="header-controls">
@@ -348,6 +390,47 @@ export class FerrariOverlay {
 
       ::-webkit-scrollbar-thumb:hover {
         background: #4d4d6c;
+      }
+
+      /* VAD Glow Effect - Green glow when speaking */
+      .record-btn.speaking {
+        animation: vad-glow 0.5s ease-in-out infinite alternate;
+        box-shadow: 0 0 20px #22c55e, 0 0 40px #22c55e;
+      }
+
+      @keyframes vad-glow {
+        from {
+          box-shadow: 0 0 10px #22c55e, 0 0 20px #22c55e;
+        }
+        to {
+          box-shadow: 0 0 20px #22c55e, 0 0 40px #22c55e, 0 0 60px #22c55e;
+        }
+      }
+
+      /* Consent Badge */
+      .consent-badge {
+        display: none;
+        background: #22c55e;
+        color: white;
+        padding: 2px 8px;
+        border-radius: 10px;
+        font-size: 10px;
+        font-weight: 600;
+        text-transform: uppercase;
+      }
+
+      .consent-badge.visible {
+        display: inline-block;
+      }
+
+      .consent-badge.flash {
+        animation: consent-flash 1s ease-out;
+      }
+
+      @keyframes consent-flash {
+        0% { transform: scale(1); background: #22c55e; }
+        50% { transform: scale(1.2); background: #4ade80; }
+        100% { transform: scale(1); background: #22c55e; }
       }
     `;
   }

@@ -69,6 +69,13 @@ export class WebSocketBroker {
       onCommand: (cmd) => {
         console.log('[Broker] Voice command:', cmd.command);
         this.broadcast(createCommandBroadcast(cmd));
+
+        // Handle special "Assist" commands
+        if (cmd.command === 'assist_consent') {
+          this.handleConsentLogged(cmd);
+        } else if (cmd.command === 'assist_help') {
+          this.handleAssistTrigger(cmd);
+        }
       }
     });
 
@@ -354,6 +361,56 @@ export class WebSocketBroker {
     if (event.isFinal) {
       this.voiceConcierge.analyzeTranscript(event.text);
     }
+  }
+
+  /**
+   * Handle "Assist, consent granted" command
+   * Logs consent event and broadcasts to UI
+   */
+  private handleConsentLogged(cmd: any): void {
+    const consentEvent = {
+      type: 'consent_logged',
+      feed: 'E', // Summary feed
+      consent: {
+        timestamp: cmd.timestamp,
+        phrase: cmd.rawPhrase,
+        // TODO: Add audio clip URL when audio buffer is implemented
+        // audioClipUrl: null,
+      }
+    };
+
+    console.log('[Broker] Consent logged:', consentEvent);
+
+    // Broadcast to all clients
+    this.broadcast(consentEvent);
+
+    // TODO: Save to Supabase consent_events table
+    // await saveConsentEvent(transcriptId, consentEvent);
+  }
+
+  /**
+   * Handle "Assist, help me" command
+   * Triggers conversational agent (future: TTS response)
+   */
+  private handleAssistTrigger(cmd: any): void {
+    const assistEvent = {
+      type: 'assist_triggered',
+      feed: 'F', // Future: Audio response feed
+      assist: {
+        timestamp: cmd.timestamp,
+        phrase: cmd.rawPhrase,
+        // TODO: Extract context for LLM
+        // context: { transcript: '...', dom: '...' }
+      }
+    };
+
+    console.log('[Broker] Assist triggered:', assistEvent);
+
+    // Broadcast to notify UI
+    this.broadcast(assistEvent);
+
+    // TODO: Route to conversational agent
+    // await this.conversationAgent.handleQuery(cmd.rawPhrase, context);
   }
 
   private handleChunk(session: Session, chunk: AggregatedChunk): void {

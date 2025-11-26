@@ -20,7 +20,11 @@ export type BridgeEventType =
   | 'fields-changed'
   | 'get-patient-info'
   | 'server-error'
-  | 'toggle-overlay';
+  | 'toggle-overlay'
+  | 'consent-logged'
+  | 'voice-command'
+  | 'emergency-alert'
+  | 'assist-trigger';
 
 type EventCallback<T = unknown> = (data: T) => void | Promise<void>;
 

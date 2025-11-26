@@ -16,7 +16,9 @@ export type VoiceCommand =
   | 'submit'
   | 'cancel'
   | 'stop'
-  | 'start';
+  | 'start'
+  | 'assist_help'
+  | 'assist_consent';
 
 export interface DetectedCommand {
   command: VoiceCommand;
@@ -74,6 +76,23 @@ const COMMAND_PATTERNS: Array<{ patterns: RegExp[]; command: VoiceCommand }> = [
   {
     patterns: [/\bstart\s*(?:recording|listening)?\b/i, /\bresume\b/i, /\bbegin\b/i],
     command: 'start'
+  },
+  // "Assist" wake word commands
+  {
+    patterns: [
+      /\bassist[,.]?\s*(?:can you |could you |please )?help/i,
+      /\bassist[,.]?\s*(?:what is|what's|tell me)/i,
+      /\bassist[,.]?\s*(?:i need|i want)/i
+    ],
+    command: 'assist_help'
+  },
+  {
+    patterns: [
+      /\bassist[,.]?\s*consent\s*(?:granted|given|obtained)/i,
+      /\bassist[,.]?\s*(?:patient\s*)?consent(?:ed)?/i,
+      /\bconsent\s*(?:granted|given|obtained)/i
+    ],
+    command: 'assist_consent'
   }
 ];
 
@@ -179,7 +198,9 @@ export function getCommandUIAction(command: VoiceCommand): {
     submit: { icon: '✓', label: 'Submit', highlight: true },
     cancel: { icon: '✗', label: 'Cancel', highlight: false },
     stop: { icon: '⏹', label: 'Stop', highlight: false },
-    start: { icon: '▶', label: 'Start', highlight: true }
+    start: { icon: '▶', label: 'Start', highlight: true },
+    assist_help: { icon: '💬', label: 'Assist', highlight: true },
+    assist_consent: { icon: '✓', label: 'Consent', highlight: true }
   };
 
   return actions[command];
