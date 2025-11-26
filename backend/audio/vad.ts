@@ -100,7 +100,7 @@ export class VAD {
  */
 export function createEmergencyBroadcast(alert: EmergencyAlert): object {
   return {
-    type: 'alert',
+    kind: 'alert',
     feed: 'C',
     emergency: {
       phrase: alert.phrase,

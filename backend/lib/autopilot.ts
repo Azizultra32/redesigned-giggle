@@ -142,7 +142,7 @@ export class Autopilot {
  */
 export function createAutopilotBroadcast(state: AutopilotState): object {
   return {
-    type: 'status',
+    kind: 'status',
     feed: 'D',
     autopilot: {
       status: state.status,

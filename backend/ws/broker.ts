@@ -190,7 +190,7 @@ export class WebSocketBroker {
    */
   private broadcastFeedStatus(feed: FeedId, status: string): void {
     this.broadcastToFeed(feed, {
-      type: 'feed_status',
+      kind: 'feed_status',
       feed,
       status,
       timestamp: Date.now()
@@ -252,7 +252,7 @@ export class WebSocketBroker {
     ws.on('error', (error) => this.handleError(ws, error));
 
     this.send(ws, {
-      type: 'connected',
+      kind: 'connected',
       clientId: registeredClient.id,
       userId,
       feeds: this.feedStateMachine.getAllFeedStates()
@@ -277,14 +277,14 @@ export class WebSocketBroker {
       await this.handleCommand(session, message);
     } catch (error) {
       console.error('[Broker] Failed to parse message:', error);
-      this.send(ws, { type: 'error', error: 'Invalid message format' });
+      this.send(ws, { kind: 'error', error: 'Invalid message format' });
     }
   }
 
   private async handleCommand(session: Session, message: any): Promise<void> {
     const { ws } = session;
 
-    switch (message.type) {
+    switch (message.kind) {
       case 'start_recording':
         await this.startRecording(session, message);
         break;
@@ -307,11 +307,11 @@ export class WebSocketBroker {
         break;
 
       case 'ping':
-        this.send(ws, { type: 'pong', timestamp: Date.now() });
+        this.send(ws, { kind: 'pong', timestamp: Date.now() });
         break;
 
       default:
-        console.warn(`[Broker] Unknown command: ${message.type}`);
+        console.warn(`[Broker] Unknown command: ${message.kind}`);
     }
   }
 
@@ -319,7 +319,7 @@ export class WebSocketBroker {
     const { ws, userId } = session;
 
     if (session.isRecording) {
-      this.send(ws, { type: 'error', error: 'Already recording' });
+      this.send(ws, { kind: 'error', error: 'Already recording' });
       return;
     }
 
@@ -341,7 +341,7 @@ export class WebSocketBroker {
           const layerError = parseDeepgramError(error);
           this.errorHandler.handle(layerError);
         },
-        onClose: () => this.send(ws, { type: 'deepgram_closed' })
+        onClose: () => this.send(ws, { kind: 'deepgram_closed' })
       });
 
       await session.deepgram.connect();
@@ -351,14 +351,14 @@ export class WebSocketBroker {
       this.startSaveTimer(session);
 
       this.send(ws, {
-        type: 'recording_started',
+        kind: 'recording_started',
         transcriptId
       });
 
       console.log(`[Broker] Recording started: transcript ${transcriptId}`);
     } catch (error: any) {
       console.error('[Broker] Failed to start recording:', error);
-      this.send(ws, { type: 'error', error: error.message });
+      this.send(ws, { kind: 'error', error: error.message });
     }
   }
 
@@ -366,7 +366,7 @@ export class WebSocketBroker {
     const { ws, transcriptId, deepgram } = session;
 
     if (!session.isRecording) {
-      this.send(ws, { type: 'error', error: 'Not recording' });
+      this.send(ws, { kind: 'error', error: 'Not recording' });
       return;
     }
 
@@ -393,14 +393,14 @@ export class WebSocketBroker {
       }
 
       this.send(ws, {
-        type: 'recording_stopped',
+        kind: 'recording_stopped',
         transcriptId
       });
 
       console.log(`[Broker] Recording stopped: transcript ${transcriptId}`);
     } catch (error: any) {
       console.error('[Broker] Failed to stop recording:', error);
-      this.send(ws, { type: 'error', error: error.message });
+      this.send(ws, { kind: 'error', error: error.message });
     }
   }
 
@@ -408,15 +408,15 @@ export class WebSocketBroker {
     const { ws, transcriptId } = session;
 
     if (!transcriptId) {
-      this.send(ws, { type: 'error', error: 'No active transcript' });
+      this.send(ws, { kind: 'error', error: 'No active transcript' });
       return;
     }
 
     try {
       await updatePatientInfo(transcriptId, message.patientCode, message.patientUuid);
-      this.send(ws, { type: 'patient_set', patientCode: message.patientCode });
+      this.send(ws, { kind: 'patient_set', patientCode: message.patientCode });
     } catch (error: any) {
-      this.send(ws, { type: 'error', error: error.message });
+      this.send(ws, { kind: 'error', error: error.message });
     }
   }
 
@@ -433,7 +433,7 @@ export class WebSocketBroker {
       case 'map':
         // Request DOM mapping from extension
         this.send(ws, {
-          type: 'command_request',
+          kind: 'command_request',
           action: 'map',
           feed: 'D' // Autopilot feed
         });
@@ -442,7 +442,7 @@ export class WebSocketBroker {
       case 'fill':
         // Execute smart fill with provided steps
         this.send(ws, {
-          type: 'command_request',
+          kind: 'command_request',
           action: 'fill',
           steps: message.steps || [],
           feed: 'D'
@@ -452,7 +452,7 @@ export class WebSocketBroker {
       case 'undo':
         // Request undo of last fill operation
         this.send(ws, {
-          type: 'command_request',
+          kind: 'command_request',
           action: 'undo',
           feed: 'D'
         });
@@ -461,7 +461,7 @@ export class WebSocketBroker {
       case 'send':
         // Finalize and send form
         this.send(ws, {
-          type: 'command_request',
+          kind: 'command_request',
           action: 'send',
           feed: 'D'
         });
@@ -470,7 +470,7 @@ export class WebSocketBroker {
       case 'dictate':
         // Enable direct dictation mode to focused field
         this.send(ws, {
-          type: 'command_request',
+          kind: 'command_request',
           action: 'dictate',
           targetField: message.targetField,
           feed: 'B' // Voice command feed
@@ -479,14 +479,14 @@ export class WebSocketBroker {
 
       default:
         console.warn(`[Broker] Unknown action: ${action}`);
-        this.send(ws, { type: 'error', error: `Unknown action: ${action}` });
+        this.send(ws, { kind: 'error', error: `Unknown action: ${action}` });
     }
   }
 
   private handleTranscript(session: Session, event: TranscriptEvent): void {
     // Send to extension for display
     this.send(session.ws, {
-      type: 'transcript',
+      kind: 'transcript',
       text: event.text,
       speaker: event.speaker,
       isFinal: event.isFinal,
@@ -520,7 +520,7 @@ export class WebSocketBroker {
     }
 
     const consentEvent = {
-      type: 'consent_logged',
+      kind: 'consent_logged',
       feed: 'E',
       consent: {
         timestamp: cmd.timestamp,
@@ -564,7 +564,7 @@ export class WebSocketBroker {
    */
   private handleAssistTrigger(cmd: any): void {
     const assistEvent = {
-      type: 'assist_triggered',
+      kind: 'assist_triggered',
       feed: 'F', // Future: Audio response feed
       assist: {
         timestamp: cmd.timestamp,
@@ -589,7 +589,7 @@ export class WebSocketBroker {
 
     // Send chunk event to extension
     this.send(session.ws, {
-      type: 'chunk',
+      kind: 'chunk',
       speaker: chunk.speaker,
       text: chunk.text,
       wordCount: chunk.word_count,
@@ -658,7 +658,7 @@ export class WebSocketBroker {
     console.error('[Broker] WebSocket error:', error);
     const session = this.sessions.get(ws);
     if (session) {
-      this.send(ws, { type: 'error', error: error.message });
+      this.send(ws, { kind: 'error', error: error.message });
     }
   }
 

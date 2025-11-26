@@ -166,7 +166,7 @@ export class MultiWindowManager extends EventEmitter {
       group.leaderId = leader.id;
       this.emit('leader:elected', leader);
       this.broadcastToGroup(doctorId, {
-        type: 'leader_changed',
+        kind: 'leader_changed',
         leaderId: leader.id
       });
     }
@@ -205,7 +205,7 @@ export class MultiWindowManager extends EventEmitter {
     group.recordingWindowId = windowId;
 
     this.broadcastToGroup(window.doctorId, {
-      type: 'recording_started',
+      kind: 'recording_started',
       windowId,
       startedAt: Date.now()
     }, windowId);
@@ -227,7 +227,7 @@ export class MultiWindowManager extends EventEmitter {
     }
 
     this.broadcastToGroup(window.doctorId, {
-      type: 'recording_stopped',
+      kind: 'recording_stopped',
       windowId,
       stoppedAt: Date.now()
     }, windowId);
@@ -289,7 +289,7 @@ export class MultiWindowManager extends EventEmitter {
 
   public syncState(doctorId: string, state: object): void {
     this.broadcastToGroup(doctorId, {
-      type: 'state_sync',
+      kind: 'state_sync',
       state,
       timestamp: Date.now()
     });
@@ -301,7 +301,7 @@ export class MultiWindowManager extends EventEmitter {
     isFinal: boolean;
   }): void {
     this.broadcastToGroup(doctorId, {
-      type: 'transcript_sync',
+      kind: 'transcript_sync',
       ...transcript,
       timestamp: Date.now()
     });

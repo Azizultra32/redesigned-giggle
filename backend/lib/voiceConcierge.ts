@@ -168,7 +168,7 @@ export class VoiceConcierge {
  */
 export function createCommandBroadcast(cmd: DetectedCommand): object {
   return {
-    type: 'voice_command',
+    kind: 'voice_command',
     feed: 'B',
     command: {
       action: cmd.command,

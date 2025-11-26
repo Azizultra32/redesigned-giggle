@@ -103,7 +103,7 @@ export function createError(
  */
 export function createErrorBroadcast(error: LayerError): object {
   return {
-    type: 'error',
+    kind: 'error',
     feed: 'A',
     error: {
       layer: error.layer,

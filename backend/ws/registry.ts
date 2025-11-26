@@ -319,7 +319,7 @@ export class ClientRegistry extends EventEmitter {
     confidence?: number;
   }, doctorId?: string): BroadcastResult {
     return this.broadcast(
-      { type: 'transcript', feed: 'A', ...data },
+      { kind: 'transcript', feed: 'A', ...data },
       { feed: 'A', doctorId }
     );
   }
@@ -329,7 +329,7 @@ export class ClientRegistry extends EventEmitter {
     params?: Record<string, unknown>;
   }, doctorId?: string): BroadcastResult {
     return this.broadcast(
-      { type: 'voice_command', feed: 'B', ...data },
+      { kind: 'voice_command', feed: 'B', ...data },
       { feed: 'B', doctorId }
     );
   }
@@ -340,7 +340,7 @@ export class ClientRegistry extends EventEmitter {
     phrase?: string;
   }, doctorId?: string): BroadcastResult {
     return this.broadcast(
-      { type: 'emergency', feed: 'C', ...data },
+      { kind: 'emergency', feed: 'C', ...data },
       { feed: 'C', doctorId }
     );
   }
@@ -350,7 +350,7 @@ export class ClientRegistry extends EventEmitter {
     surfaces?: number;
   }, doctorId?: string): BroadcastResult {
     return this.broadcast(
-      { type: 'autopilot', feed: 'D', ...data },
+      { kind: 'autopilot', feed: 'D', ...data },
       { feed: 'D', doctorId }
     );
   }
@@ -360,7 +360,7 @@ export class ClientRegistry extends EventEmitter {
     phrase: string;
   }, doctorId?: string): BroadcastResult {
     return this.broadcast(
-      { type: 'consent_logged', feed: 'E', ...data },
+      { kind: 'consent_logged', feed: 'E', ...data },
       { feed: 'E', doctorId }
     );
   }
@@ -370,7 +370,7 @@ export class ClientRegistry extends EventEmitter {
     text: string;
   }, doctorId?: string): BroadcastResult {
     return this.broadcast(
-      { type: 'audio_response', feed: 'F', ...data },
+      { kind: 'audio_response', feed: 'F', ...data },
       { feed: 'F', doctorId }
     );
   }

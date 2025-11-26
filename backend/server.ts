@@ -151,7 +151,7 @@ audioWss.on('connection', (ws, req) => {
   console.log('[Server] Audio stream connection');
   // Redirect to main broker - audio clients should use /ws
   ws.send(JSON.stringify({
-    type: 'redirect',
+    kind: 'redirect',
     message: 'Please use /ws endpoint for full functionality'
   }));
 });
