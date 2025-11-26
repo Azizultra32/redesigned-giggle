@@ -16,6 +16,9 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { config } from 'dotenv';
 import { WsBridge } from './lib/ws-bridge.js';
 import { DeepgramConsumer } from './audio/deepgram-consumer.js';
+import { TabManager, DomMap, PatientHint } from './lib/tab-manager.js';
+import { CommandRouter, CommandAction } from './lib/command-router.js';
+import { Autopilot } from './lib/autopilot.js';
 import {
   createTranscriptRun,
   saveTranscriptChunks,
@@ -25,7 +28,7 @@ import {
   getLatestTranscript,
   generateEphemeralPatientCode
 } from './lib/supabase.js';
-import { TranscriptChunk, TranscriptEvent, DomMap } from './types/index.js';
+import { TranscriptChunk, TranscriptEvent } from './types/index.js';
 
 // Load environment variables
 config();
@@ -41,6 +44,28 @@ app.use(cors({
   credentials: true
 }));
 app.use(express.json());
+
+// ============================================================================
+// Core Modules (initialized before routes)
+// ============================================================================
+
+// Initialize WsBridge
+const wsBridge = new WsBridge();
+
+// Initialize TabManager, CommandRouter, and Autopilot
+const tabManager = new TabManager();
+const commandRouter = new CommandRouter(tabManager);
+const autopilot = new Autopilot(tabManager);
+
+// Setup active tab change handler
+tabManager.setOnActiveTabChange((tabId) => {
+  // Broadcast to all clients
+  wsBridge.broadcast({
+    type: 'active_tab_changed',
+    tabId,
+    timestamp: Date.now()
+  });
+});
 
 // ============================================================================
 // HTTP Endpoints
@@ -136,14 +161,14 @@ app.get('/patient/current', async (req: Request, res: Response) => {
 app.get('/transcripts/:id', async (req: Request, res: Response) => {
   try {
     const transcriptId = parseInt(req.params.id);
-    
+
     if (isNaN(transcriptId)) {
       res.status(400).json({ error: 'Invalid transcript ID' });
       return;
     }
 
     const transcript = await getTranscript(transcriptId);
-    
+
     if (!transcript) {
       res.status(404).json({ error: 'Transcript not found' });
       return;
@@ -156,14 +181,48 @@ app.get('/transcripts/:id', async (req: Request, res: Response) => {
   }
 });
 
+/**
+ * Get all connected tabs
+ */
+app.get('/tabs', (_req: Request, res: Response) => {
+  const tabs = tabManager.getAllTabs().map(tab => ({
+    tabId: tab.tabId,
+    url: tab.url,
+    title: tab.title,
+    patientHint: tab.patientHint,
+    isActive: tab.tabId === tabManager.getActiveTabId(),
+    registeredAt: tab.registeredAt,
+    lastSeen: tab.lastSeen
+  }));
+
+  res.json({
+    tabs,
+    activeTabId: tabManager.getActiveTabId(),
+    count: tabs.length
+  });
+});
+
+/**
+ * Get autopilot status for a tab
+ */
+app.get('/autopilot/:tabId', (req: Request, res: Response) => {
+  const { tabId } = req.params;
+
+  const tab = tabManager.getTab(tabId);
+  if (!tab) {
+    res.status(404).json({ error: 'Tab not found' });
+    return;
+  }
+
+  const report = autopilot.calculateCoverage(tabId);
+  res.json(report);
+});
+
 // ============================================================================
 // WebSocket Setup
 // ============================================================================
 
 const server = createServer(app);
-
-// Initialize WsBridge
-const wsBridge = new WsBridge();
 
 // WebSocket server
 const wss = new WebSocketServer({
@@ -175,11 +234,13 @@ const wss = new WebSocketServer({
 interface Session {
   ws: WebSocket;
   userId: string;
+  tabId: string | null;
   transcriptId: number | null;
   deepgram: DeepgramConsumer | null;
   pendingChunks: TranscriptChunk[];
   isRecording: boolean;
   saveTimer: NodeJS.Timeout | null;
+  fullTranscript: string;
 }
 
 const sessions = new Map<WebSocket, Session>();
@@ -194,11 +255,13 @@ wss.on('connection', (ws: WebSocket, req) => {
   const session: Session = {
     ws,
     userId,
+    tabId: null,
     transcriptId: null,
     deepgram: null,
     pendingChunks: [],
     isRecording: false,
-    saveTimer: null
+    saveTimer: null,
+    fullTranscript: ''
   };
 
   sessions.set(ws, session);
@@ -214,6 +277,9 @@ wss.on('connection', (ws: WebSocket, req) => {
   // Handle close
   ws.on('close', () => {
     console.log(`[Server] WebSocket disconnected: ${userId}`);
+    if (session.tabId) {
+      tabManager.unregisterTab(session.tabId);
+    }
     cleanupSession(session);
     sessions.delete(ws);
   });
@@ -255,6 +321,20 @@ async function handleMessage(session: Session, data: any): Promise<void> {
  */
 async function handleCommand(session: Session, message: any): Promise<void> {
   switch (message.type) {
+    // Multi-tab handshake
+    case 'hello':
+      await handleHello(session, message);
+      break;
+
+    case 'bind_audio':
+      await handleBindAudio(session, message);
+      break;
+
+    case 'force_bind':
+      await handleForceBind(session, message);
+      break;
+
+    // Recording
     case 'start_recording':
       await startRecording(session, message);
       break;
@@ -263,6 +343,16 @@ async function handleCommand(session: Session, message: any): Promise<void> {
       await stopRecording(session);
       break;
 
+    // DOM and commands
+    case 'dom_map':
+      await handleDomMap(session, message);
+      break;
+
+    case 'command':
+      await handleCommand2(session, message);
+      break;
+
+    // Heartbeat
     case 'ping':
       send(session.ws, { type: 'pong', timestamp: Date.now() });
       break;
@@ -270,6 +360,189 @@ async function handleCommand(session: Session, message: any): Promise<void> {
     default:
       console.warn(`[Server] Unknown command: ${message.type}`);
   }
+}
+
+/**
+ * Handle hello message - register a browser tab
+ */
+async function handleHello(session: Session, message: any): Promise<void> {
+  const { tabId, url, title, patientHint } = message;
+
+  if (!tabId) {
+    send(session.ws, { type: 'error', error: 'Missing tabId in hello message' });
+    return;
+  }
+
+  session.tabId = tabId;
+
+  const result = tabManager.registerTab(tabId, session.ws, url || '', title || '', patientHint || null);
+
+  send(session.ws, {
+    type: 'hello_ack',
+    tabId,
+    isActive: result.isActive,
+    activeTabId: result.activeTabId
+  });
+
+  console.log(`[Server] Tab registered: ${tabId}`);
+}
+
+/**
+ * Handle bind_audio message - bind audio to a tab
+ */
+async function handleBindAudio(session: Session, message: any): Promise<void> {
+  const tabId = session.tabId || message.tabId;
+
+  if (!tabId) {
+    send(session.ws, { type: 'error', error: 'Tab not registered. Send hello first.' });
+    return;
+  }
+
+  // Generate patient code if not already recording
+  const patientCode = message.patientCode || generateEphemeralPatientCode();
+
+  // Create transcript run
+  const transcriptId = await createTranscriptRun(
+    session.userId,
+    patientCode,
+    message.patientUuid || null
+  );
+  session.transcriptId = transcriptId;
+
+  const result = tabManager.bindAudio(tabId, transcriptId, patientCode);
+
+  if (!result.success) {
+    send(session.ws, {
+      type: 'bind_audio_warning',
+      warning: result.warning,
+      previousTabId: result.previousTabId
+    });
+    return;
+  }
+
+  send(session.ws, {
+    type: 'audio_bound',
+    tabId,
+    transcriptId,
+    patientCode
+  });
+
+  console.log(`[Server] Audio bound to tab: ${tabId}, transcript: ${transcriptId}`);
+}
+
+/**
+ * Handle force_bind message - force bind audio despite warnings
+ */
+async function handleForceBind(session: Session, message: any): Promise<void> {
+  const tabId = session.tabId || message.tabId;
+
+  if (!tabId) {
+    send(session.ws, { type: 'error', error: 'Tab not registered. Send hello first.' });
+    return;
+  }
+
+  const patientCode = message.patientCode || generateEphemeralPatientCode();
+
+  // Create transcript run if needed
+  if (!session.transcriptId) {
+    const transcriptId = await createTranscriptRun(
+      session.userId,
+      patientCode,
+      message.patientUuid || null
+    );
+    session.transcriptId = transcriptId;
+  }
+
+  const result = tabManager.forceBindAudio(tabId, session.transcriptId!, patientCode);
+
+  send(session.ws, {
+    type: 'audio_bound',
+    tabId,
+    transcriptId: session.transcriptId,
+    patientCode,
+    forced: true
+  });
+}
+
+/**
+ * Handle DOM map update from overlay
+ */
+async function handleDomMap(session: Session, message: any): Promise<void> {
+  const tabId = session.tabId || message.tabId;
+
+  if (!tabId) {
+    send(session.ws, { type: 'error', error: 'Tab not registered' });
+    return;
+  }
+
+  const domMap: DomMap = {
+    fields: message.fields || [],
+    patientHint: message.patientHint || null,
+    timestamp: Date.now()
+  };
+
+  // Update in tab manager and command router
+  commandRouter.updateDomMap(tabId, domMap);
+
+  // Calculate autopilot coverage
+  const report = autopilot.calculateCoverage(tabId);
+
+  send(session.ws, {
+    type: 'dom_map_ack',
+    tabId,
+    fieldCount: domMap.fields.length
+  });
+
+  // Send autopilot update
+  send(session.ws, {
+    type: 'autopilot',
+    data: report
+  });
+
+  console.log(`[Server] DOM map received: ${domMap.fields.length} fields`);
+}
+
+/**
+ * Handle command from overlay (MAP/FILL/UNDO/SEND)
+ */
+async function handleCommand2(session: Session, message: any): Promise<void> {
+  const tabId = session.tabId || message.tabId;
+  const action = message.action as CommandAction;
+
+  if (!tabId) {
+    send(session.ws, { type: 'error', error: 'Tab not registered' });
+    return;
+  }
+
+  if (!action || !['map', 'fill', 'undo', 'send'].includes(action)) {
+    send(session.ws, { type: 'error', error: `Invalid command action: ${action}` });
+    return;
+  }
+
+  // Update transcript data for command router
+  if (session.fullTranscript) {
+    commandRouter.updateTranscript(tabId, {
+      fullText: session.fullTranscript,
+      chunks: session.pendingChunks.map(c => ({
+        speaker: c.speaker || 0,
+        text: c.text,
+        timestamp: c.timestamp
+      }))
+    });
+  }
+
+  const result = await commandRouter.processCommand({
+    action,
+    tabId,
+    payload: message.payload
+  });
+
+  send(session.ws, {
+    type: 'command_result',
+    ...result
+  });
+
+  console.log(`[Server] Command ${action}: ${result.success ? 'success' : 'failed'}`);
 }
 
 /**
@@ -296,6 +569,23 @@ async function startRecording(session: Session, message: any): Promise<void> {
     // Initialize Deepgram
     session.deepgram = new DeepgramConsumer({
       onTranscript: (event: TranscriptEvent) => {
+        // Accumulate full transcript for autopilot
+        if (event.isFinal) {
+          session.fullTranscript += ' ' + event.text;
+
+          // Update autopilot with new transcript
+          if (session.tabId) {
+            autopilot.updateTranscript(session.tabId, {
+              fullText: session.fullTranscript,
+              chunks: []
+            });
+
+            // Recalculate and broadcast autopilot status
+            const report = autopilot.calculateCoverage(session.tabId);
+            send(session.ws, { type: 'autopilot', data: report });
+          }
+        }
+
         // Broadcast transcript via WsBridge (Feed A)
         wsBridge.broadcastTranscript(
           event.text,
