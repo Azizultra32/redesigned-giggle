@@ -6,6 +6,13 @@
  * - /ws: Command/control channel (JSON messages)
  * - Audio streaming to Deepgram
  * - Transcript broadcast to extension
+ *
+ * Integrates:
+ * - SessionManager (PATH R)
+ * - ClientRegistry (PATH U)
+ * - OfflineManager (PATH W)
+ * - FeedStateMachine (PATH X)
+ * - DoctorIdentityManager (PATH Y)
  */
 
 import { WebSocket, WebSocketServer, RawData } from 'ws';
@@ -17,16 +24,28 @@ import {
   saveTranscriptChunks,
   updateTranscriptRun,
   updatePatientInfo,
-  TranscriptChunk
+  TranscriptChunk,
+  saveConsentEvent
 } from '../supabase/queries.js';
 import { VAD, createEmergencyBroadcast } from '../audio/vad.js';
 import { VoiceConcierge, createCommandBroadcast } from '../lib/voiceConcierge.js';
 import { Autopilot, createAutopilotBroadcast } from '../lib/autopilot.js';
-import { ErrorHandler, createError, createErrorBroadcast, parseDeepgramError, ERROR_CODES } from '../lib/errors.js';
+import { ErrorHandler, createErrorBroadcast, parseDeepgramError } from '../lib/errors.js';
+
+// PATH Q-Z Integration imports
+import { SessionManager } from '../lib/session.js';
+import { ClientRegistry, ClientType, FeedId } from './registry.js';
+import { OfflineManager } from '../supabase/offline.js';
+import { FeedStateMachine } from '../lib/feedStateMachine.js';
+import { DoctorIdentityManager } from '../lib/doctorIdentity.js';
+import { MultiWindowManager } from '../lib/multiWindow.js';
+import { getSupabaseClient } from '../supabase/client.js';
 
 export interface Session {
   ws: WebSocket;
+  clientId: string;
   userId: string;
+  windowId: string | null;
   transcriptId: number | null;
   deepgram: DeepgramConsumer | null;
   pendingChunks: TranscriptChunk[];
@@ -35,6 +54,8 @@ export interface Session {
 
 export interface BrokerConfig {
   saveInterval: number; // ms between chunk saves
+  enableOfflineMode: boolean;
+  enableMultiWindow: boolean;
 }
 
 export class WebSocketBroker {
@@ -49,18 +70,72 @@ export class WebSocketBroker {
   private autopilot: Autopilot;
   private errorHandler: ErrorHandler;
 
+  // PATH Q-Z integrated modules
+  private sessionManager: SessionManager;
+  private clientRegistry: ClientRegistry;
+  private offlineManager: OfflineManager | null = null;
+  private feedStateMachine: FeedStateMachine;
+  private doctorIdentity: DoctorIdentityManager;
+  private multiWindowManager: MultiWindowManager;
+
   constructor(wss: WebSocketServer, config?: Partial<BrokerConfig>) {
     this.wss = wss;
     this.config = {
       saveInterval: 5000,
+      enableOfflineMode: true,
+      enableMultiWindow: true,
       ...config
     };
+
+    // Initialize PATH Q-Z modules
+    this.sessionManager = new SessionManager({
+      sessionTTL: 30 * 60 * 1000,  // 30 minutes
+      cleanupInterval: 5 * 60 * 1000  // 5 minutes
+    });
+
+    this.clientRegistry = new ClientRegistry();
+
+    // Initialize OfflineManager if Supabase is available
+    const supabase = getSupabaseClient();
+    if (supabase && this.config.enableOfflineMode) {
+      this.offlineManager = new OfflineManager(supabase);
+      this.offlineManager.on('offline', () => {
+        console.warn('[Broker] Supabase offline, using queue');
+        this.feedStateMachine.setFeedStatus('E', 'degraded', 'Database offline');
+      });
+      this.offlineManager.on('online', () => {
+        console.log('[Broker] Supabase back online');
+        this.feedStateMachine.setFeedStatus('E', 'ready');
+      });
+    }
+
+    this.feedStateMachine = new FeedStateMachine();
+    this.feedStateMachine.on('feed:status', (feedId: FeedId, status: string) => {
+      this.broadcastFeedStatus(feedId, status);
+    });
+
+    this.doctorIdentity = new DoctorIdentityManager(supabase, { demoMode: !supabase });
+
+    this.multiWindowManager = new MultiWindowManager();
+    if (this.config.enableMultiWindow) {
+      this.multiWindowManager.on('leader:elected', (window) => {
+        console.log(`[Broker] Leader elected: ${window.id}`);
+      });
+      this.multiWindowManager.on('recording:conflict', (conflict) => {
+        console.warn('[Broker] Recording conflict:', conflict);
+      });
+    }
 
     // Initialize VAD for emergency detection (PATH K - Feed C)
     this.vad = new VAD({
       onEmergency: (alert) => {
         console.log('[Broker] Emergency detected:', alert.phrase);
-        this.broadcast(createEmergencyBroadcast(alert));
+        // Map severity levels to feed state machine format
+        const feedSeverity = (alert.severity === 'critical' || alert.severity === 'high')
+          ? 'critical' as const
+          : 'warning' as const;
+        this.feedStateMachine.triggerEmergency(feedSeverity, alert.phrase);
+        this.broadcastToFeed('C', createEmergencyBroadcast(alert));
       }
     });
 
@@ -68,7 +143,8 @@ export class WebSocketBroker {
     this.voiceConcierge = new VoiceConcierge({
       onCommand: (cmd) => {
         console.log('[Broker] Voice command:', cmd.command);
-        this.broadcast(createCommandBroadcast(cmd));
+        this.feedStateMachine.triggerVoiceCommand(cmd.command);
+        this.broadcastToFeed('B', createCommandBroadcast(cmd));
 
         // Handle special "Assist" commands
         if (cmd.command === 'assist_consent') {
@@ -81,27 +157,85 @@ export class WebSocketBroker {
 
     // Initialize Autopilot (PATH J - Feed D)
     this.autopilot = new Autopilot((state) => {
-      this.broadcast(createAutopilotBroadcast(state));
+      const surfaceCount = state.surfaces.length;
+      if (state.status === 'READY') {
+        this.feedStateMachine.setAutopilotReady(surfaceCount);
+      } else if (state.status === 'LEARNING') {
+        this.feedStateMachine.setAutopilotLearning(surfaceCount);
+      }
+      this.broadcastToFeed('D', createAutopilotBroadcast(state));
     });
 
     // Initialize Error Handler (PATH O - Feed A)
     this.errorHandler = new ErrorHandler((error) => {
-      this.broadcast(createErrorBroadcast(error));
+      this.broadcastToFeed('A', createErrorBroadcast(error));
     });
 
+    // Initialize all feeds
+    this.feedStateMachine.initializeAll();
+
     this.wss.on('connection', this.handleConnection.bind(this));
-    console.log('[Broker] WebSocket broker initialized');
+    console.log('[Broker] WebSocket broker initialized with PATH Q-Z modules');
+  }
+
+  /**
+   * Broadcast to specific feed subscribers
+   */
+  private broadcastToFeed(feed: FeedId, message: object): void {
+    this.clientRegistry.broadcast(message, { feed });
+  }
+
+  /**
+   * Broadcast feed status change
+   */
+  private broadcastFeedStatus(feed: FeedId, status: string): void {
+    this.broadcastToFeed(feed, {
+      type: 'feed_status',
+      feed,
+      status,
+      timestamp: Date.now()
+    });
   }
 
   private async handleConnection(ws: WebSocket, req: IncomingMessage): Promise<void> {
     const url = new URL(req.url || '', 'http://localhost');
     const userId = url.searchParams.get('userId') || 'anonymous';
+    const windowId = url.searchParams.get('windowId') || null;
+    const clientType = (url.searchParams.get('type') as ClientType) || 'overlay';
 
-    console.log(`[Broker] New connection from user: ${userId}`);
+    console.log(`[Broker] New connection from user: ${userId}, window: ${windowId}`);
 
+    // Generate client ID
+    const clientId = `client-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+    // Register with ClientRegistry (PATH U)
+    const registeredClient = this.clientRegistry.register({
+      ws,
+      type: clientType,
+      doctorId: userId,
+      metadata: {
+        windowId: windowId || undefined,
+        userAgent: req.headers['user-agent']
+      }
+    });
+
+    // Register with MultiWindowManager (PATH S)
+    if (windowId && this.config.enableMultiWindow) {
+      this.multiWindowManager.registerWindow({
+        windowId,
+        tabId: parseInt(url.searchParams.get('tabId') || '0'),
+        ws,
+        doctorId: userId,
+        url: url.searchParams.get('pageUrl') || ''
+      });
+    }
+
+    // Create session
     const session: Session = {
       ws,
+      clientId: registeredClient.id,
       userId,
+      windowId,
       transcriptId: null,
       deepgram: null,
       pendingChunks: [],
@@ -110,11 +244,19 @@ export class WebSocketBroker {
 
     this.sessions.set(ws, session);
 
+    // Set feeds as ready
+    this.feedStateMachine.readyAll();
+
     ws.on('message', (data) => this.handleMessage(ws, data));
     ws.on('close', () => this.handleClose(ws));
     ws.on('error', (error) => this.handleError(ws, error));
 
-    this.send(ws, { type: 'connected', userId });
+    this.send(ws, {
+      type: 'connected',
+      clientId: registeredClient.id,
+      userId,
+      feeds: this.feedStateMachine.getAllFeedStates()
+    });
   }
 
   private async handleMessage(ws: WebSocket, data: RawData): Promise<void> {
@@ -367,25 +509,53 @@ export class WebSocketBroker {
    * Handle "Assist, consent granted" command
    * Logs consent event and broadcasts to UI
    */
-  private handleConsentLogged(cmd: any): void {
+  private async handleConsentLogged(cmd: any): Promise<void> {
+    // Get current active session to find transcript ID
+    let transcriptId: number | null = null;
+    for (const session of this.sessions.values()) {
+      if (session.isRecording && session.transcriptId) {
+        transcriptId = session.transcriptId;
+        break;
+      }
+    }
+
     const consentEvent = {
       type: 'consent_logged',
-      feed: 'E', // Summary feed
+      feed: 'E',
       consent: {
         timestamp: cmd.timestamp,
         phrase: cmd.rawPhrase,
-        // TODO: Add audio clip URL when audio buffer is implemented
-        // audioClipUrl: null,
+        transcriptId
       }
     };
 
     console.log('[Broker] Consent logged:', consentEvent);
 
-    // Broadcast to all clients
-    this.broadcast(consentEvent);
+    // Update feed state machine (PATH X)
+    this.feedStateMachine.logConsent(cmd.rawPhrase);
 
-    // TODO: Save to Supabase consent_events table
-    // await saveConsentEvent(transcriptId, consentEvent);
+    // Broadcast to all clients via registry (PATH U)
+    this.clientRegistry.broadcastConsent({
+      timestamp: cmd.timestamp,
+      phrase: cmd.rawPhrase
+    });
+
+    // Persist to Supabase (PATH W with offline fallback)
+    if (transcriptId) {
+      try {
+        if (this.offlineManager) {
+          await this.offlineManager.insert('consent_events', {
+            transcript_id: transcriptId,
+            phrase: cmd.rawPhrase,
+            timestamp: new Date(cmd.timestamp).toISOString()
+          });
+        } else {
+          await saveConsentEvent(transcriptId, cmd.rawPhrase, cmd.timestamp);
+        }
+      } catch (error) {
+        console.error('[Broker] Failed to persist consent event:', error);
+      }
+    }
   }
 
   /**
@@ -464,6 +634,15 @@ export class WebSocketBroker {
     const session = this.sessions.get(ws);
     if (session) {
       console.log(`[Broker] Connection closed: ${session.userId}`);
+
+      // Unregister from ClientRegistry (PATH U)
+      this.clientRegistry.unregister(session.clientId);
+
+      // Unregister from MultiWindowManager (PATH S)
+      if (session.windowId && this.config.enableMultiWindow) {
+        this.multiWindowManager.unregisterWindow(session.windowId);
+      }
+
       if (session.deepgram) {
         session.deepgram.disconnect();
       }

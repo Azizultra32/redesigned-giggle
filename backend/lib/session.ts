@@ -9,7 +9,7 @@
  */
 
 import { EventEmitter } from 'events';
-import { LifecycleOrchestrator, LifecycleState } from './lifecycle';
+import { LifecycleOrchestrator, LifecycleState } from './lifecycle.js';
 
 export interface Session {
   id: string;

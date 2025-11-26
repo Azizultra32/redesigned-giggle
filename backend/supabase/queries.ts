@@ -357,3 +357,59 @@ export async function saveSummary(
 
   console.log(`[Supabase] Saved summary to transcript ${transcriptId}`);
 }
+
+/**
+ * Save consent event to consent_events table (PATH E - Feed E)
+ * Records when patient consent is logged via voice command
+ */
+export async function saveConsentEvent(
+  transcriptId: number,
+  phrase: string,
+  timestamp: number
+): Promise<number> {
+  const client = getSupabaseClient();
+
+  const { data, error } = await client
+    .from('consent_events')
+    .insert({
+      transcript_id: transcriptId,
+      phrase,
+      timestamp: new Date(timestamp).toISOString(),
+      created_at: new Date().toISOString()
+    })
+    .select('id')
+    .single();
+
+  if (error) {
+    console.error('[Supabase] Failed to save consent event:', error);
+    throw error;
+  }
+
+  console.log(`[Supabase] Consent logged for transcript ${transcriptId}`);
+  return data.id;
+}
+
+/**
+ * Get consent events for a transcript
+ */
+export async function getConsentEvents(transcriptId: number): Promise<Array<{
+  id: number;
+  phrase: string;
+  timestamp: string;
+  created_at: string;
+}>> {
+  const client = getSupabaseClient();
+
+  const { data, error } = await client
+    .from('consent_events')
+    .select('id, phrase, timestamp, created_at')
+    .eq('transcript_id', transcriptId)
+    .order('timestamp', { ascending: true });
+
+  if (error) {
+    console.error('[Supabase] Failed to get consent events:', error);
+    throw error;
+  }
+
+  return data || [];
+}
