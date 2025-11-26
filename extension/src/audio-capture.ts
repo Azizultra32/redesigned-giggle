@@ -18,7 +18,7 @@ const DEFAULT_CONFIG: AudioCaptureConfig = {
   sampleRate: 16000,        // Deepgram preferred rate
   channels: 1,              // Mono audio
   bufferSize: 4096,         // Buffer size for processing
-  websocketUrl: 'ws://localhost:3001/ws'
+  websocketUrl: 'ws://localhost:8787/ws'
 };
 
 export class AudioCapture {
@@ -162,14 +162,15 @@ export class AudioCapture {
     try {
       const message = JSON.parse(data);
 
-      switch (message.type) {
+      // Per OpenSpec: all WS messages use `kind` field
+      switch (message.kind) {
         case 'transcript':
           this.bridge.emit('transcript', {
             id: message.id || `${Date.now()}`,
             speaker: message.speaker || 'Unknown',
             text: message.text,
             timestamp: message.timestamp || Date.now(),
-            isFinal: message.is_final ?? true
+            isFinal: message.isFinal ?? true
           });
           break;
 
@@ -178,12 +179,37 @@ export class AudioCapture {
           this.bridge.emit('server-error', { error: message.error });
           break;
 
+        case 'consent_logged':
+          this.bridge.emit('consent-logged', message.consent || {});
+          break;
+
+        case 'voice_command':
+          this.bridge.emit('voice-command', message.command || {});
+          break;
+
+        case 'alert':
+          this.bridge.emit('emergency-alert', message.emergency || {});
+          break;
+
+        case 'connected':
+          console.log('[AudioCapture] Connected to backend:', message);
+          break;
+
+        case 'recording_started':
+          console.log('[AudioCapture] Recording started, transcript ID:', message.transcriptId);
+          break;
+
+        case 'recording_stopped':
+          console.log('[AudioCapture] Recording stopped');
+          break;
+
+        case 'feed_status':
         case 'status':
           console.log('[AudioCapture] Server status:', message);
           break;
 
         default:
-          console.log('[AudioCapture] Unknown message type:', message.type);
+          console.log('[AudioCapture] Unknown message kind:', message.kind);
       }
     } catch (error) {
       console.error('[AudioCapture] Failed to parse message:', error);

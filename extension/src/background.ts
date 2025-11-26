@@ -90,7 +90,7 @@ chrome.runtime.onInstalled.addListener((details) => {
     chrome.storage.local.set({
       settings: {
         autoConnect: true,
-        agentUrl: 'ws://localhost:3001/ws',
+        agentUrl: 'ws://localhost:8787/ws',
         theme: 'dark'
       }
     });
