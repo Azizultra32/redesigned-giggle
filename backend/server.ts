@@ -15,13 +15,14 @@ import { WebSocketServer } from 'ws';
 import { config } from 'dotenv';
 import { WebSocketBroker } from './ws/broker.js';
 import { generateDemoPatientCode, generatePatientCode, validatePatientCode } from './utils/patient.js';
-import { getTranscriptById, latestTranscriptProfile } from './supabase/queries.js';
+import { getTranscriptById, latestTranscriptProfile, getFullTranscript } from './supabase/queries.js';
+import { getLLMProvider } from './lib/llm.js';
 
 // Load environment variables
 config();
 
 const app = express();
-const PORT = process.env.PORT || 3001;
+const PORT = process.env.PORT || 8787;
 
 // Middleware
 app.use(cors({
@@ -41,13 +42,43 @@ app.get('/health', (_req: Request, res: Response) => {
   });
 });
 
-// Demo patient code generator
-app.get('/demo/patient', (_req: Request, res: Response) => {
-  const patientCode = generateDemoPatientCode();
-  res.json({
-    patientCode,
-    message: 'Demo patient code generated'
-  });
+// Demo patient card endpoint (per CNS OpenSpec)
+app.get('/demo/patient', async (_req: Request, res: Response) => {
+  try {
+    // Get latest transcript to populate patient card
+    const profile = await latestTranscriptProfile();
+
+    // Build patient card per spec
+    const patientCard = {
+      name: 'Demo Patient',
+      dob: '1971-01-01',
+      mrn: profile.patient_code || generateDemoPatientCode(),
+      sex: 'F',
+      reason: profile.transcript
+        ? profile.transcript.substring(0, 100) + (profile.transcript.length > 100 ? '...' : '')
+        : 'Chest pain and shortness of breath',
+      sessionId: profile.id ? String(profile.id) : null,
+      doctor: 'Demo Clinician',
+      autopilotReady: profile.completed_at !== null,
+      lastTranscript: profile.transcript || null
+    };
+
+    res.json(patientCard);
+  } catch (error: any) {
+    console.error('[Server] GET /demo/patient error:', error);
+    // Return fallback patient card on error
+    res.json({
+      name: 'Demo Patient',
+      dob: '1971-01-01',
+      mrn: generateDemoPatientCode(),
+      sex: 'F',
+      reason: 'Chest pain and shortness of breath',
+      sessionId: null,
+      doctor: 'Demo Clinician',
+      autopilotReady: false,
+      lastTranscript: null
+    });
+  }
 });
 
 // Validate patient code
@@ -134,6 +165,47 @@ app.get('/stats', (_req: Request, res: Response) => {
   });
 });
 
+// Chat assist endpoint (LLM integration per CNS OpenSpec)
+app.post('/chat/assist', async (req: Request, res: Response) => {
+  try {
+    const { question, transcriptId, patientContext, threadId } = req.body;
+
+    if (!question) {
+      res.status(400).json({ ok: false, error: 'Missing question field' });
+      return;
+    }
+
+    // Get transcript if ID provided
+    let transcript: string | undefined;
+    if (transcriptId) {
+      try {
+        transcript = await getFullTranscript(transcriptId);
+      } catch (err) {
+        console.warn(`[Server] Could not fetch transcript ${transcriptId}:`, err);
+      }
+    }
+
+    // Call LLM provider
+    const llm = getLLMProvider();
+    const response = await llm.assist({
+      question,
+      transcriptId,
+      transcript,
+      patientContext,
+      threadId
+    });
+
+    res.json({
+      ok: true,
+      answer: response.answer,
+      metadata: response.metadata
+    });
+  } catch (error: any) {
+    console.error('[Server] POST /chat/assist error:', error);
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
 // Start server
 server.listen(PORT, () => {
   console.log('');
@@ -145,6 +217,7 @@ server.listen(PORT, () => {
   console.log(`   Health:      http://localhost:${PORT}/health`);
   console.log(`   Demo:        http://localhost:${PORT}/demo/patient`);
   console.log(`   Transcripts: http://localhost:${PORT}/transcripts/:id`);
+  console.log(`   Chat Assist: http://localhost:${PORT}/chat/assist (POST)`);
   console.log(`   Stats:       http://localhost:${PORT}/stats`);
   console.log('========================================');
   console.log('');
