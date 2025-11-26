@@ -56,7 +56,7 @@ export interface TranscriptChunk {
   end: number;
   word_count: number;
   raw: WordResult[];
-  timestamp?: number;  // Add this field
+  timestamp?: number;  // Optional: Added for command routing; populated when chunks are mapped for UI display
 }
 ```
 
@@ -73,10 +73,11 @@ export type WsMessage = StatusMessage | TranscriptMessage | AlertMessage | Comma
 
 **3. Update `lib/ws-bridge.ts` - Make broadcast public or add wrapper:**
 ```typescript
-// Either change:
-private broadcast(...) → public broadcast(...)
+// Either change the access modifier on the broadcast method:
+// FROM: private broadcast(message: WsMessage): void { ... }
+// TO:   public broadcast(message: WsMessage): void { ... }
 
-// Or add a public method:
+// Or add a public wrapper method that calls the private one:
 public broadcastMessage(message: WsMessage): void {
   this.broadcast(message);
 }
@@ -151,9 +152,9 @@ export type TabId = 'summary' | 'soap' | 'transcript' | 'tasks' | 'patient' | 'd
 - [x] Deepgram integration (nova-2)
 - [x] Speaker diarization
 - [x] Real-time transcript display
-- [ ] **Supabase connection** ← Needs TypeScript fixes first
-- [ ] **Transcript persistence** ← Blocked by above
-- [ ] **Session management** ← Blocked by above
+- [ ] **Supabase connection** ← Requires fixing cns-agent TypeScript errors (TS2339 on DomMap.mrn, TS2339 on TranscriptChunk.timestamp)
+- [ ] **Transcript persistence** ← Requires cns-agent to compile; depends on Supabase connection
+- [ ] **Session management** ← Requires overlay TypeScript fixes (BridgeEventType additions) for proper UI integration
 
 ### Phase 2: Storage & Retrieval - Not Started
 - [ ] `transcripts2` table implementation
