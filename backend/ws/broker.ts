@@ -32,6 +32,14 @@ import { VoiceConcierge, createCommandBroadcast } from '../lib/voiceConcierge.js
 import { Autopilot, createAutopilotBroadcast } from '../lib/autopilot.js';
 import { ErrorHandler, createErrorBroadcast, parseDeepgramError } from '../lib/errors.js';
 
+// Playwright orchestration
+import {
+  getOrchestrator,
+  PlaywrightOrchestrator,
+  OrchestratorEvent,
+  OrchestratorCommand
+} from '../playwright/index.js';
+
 // PATH Q-Z Integration imports
 import { SessionManager } from '../lib/session.js';
 import { ClientRegistry, ClientType, FeedId } from './registry.js';
@@ -77,6 +85,9 @@ export class WebSocketBroker {
   private feedStateMachine: FeedStateMachine;
   private doctorIdentity: DoctorIdentityManager;
   private multiWindowManager: MultiWindowManager;
+
+  // Playwright orchestration for EHR automation
+  private orchestrator: PlaywrightOrchestrator;
 
   constructor(wss: WebSocketServer, config?: Partial<BrokerConfig>) {
     this.wss = wss;
@@ -174,8 +185,92 @@ export class WebSocketBroker {
     // Initialize all feeds
     this.feedStateMachine.initializeAll();
 
+    // Initialize Playwright orchestrator for EHR automation
+    this.orchestrator = getOrchestrator();
+    this.orchestrator.on('event', (event: OrchestratorEvent) => {
+      this.handleOrchestratorEvent(event);
+    });
+    this.orchestrator.on('state-change', (state) => {
+      this.broadcast({
+        kind: 'orchestrator_state',
+        state,
+        timestamp: Date.now()
+      });
+    });
+
     this.wss.on('connection', this.handleConnection.bind(this));
-    console.log('[Broker] WebSocket broker initialized with PATH Q-Z modules');
+    console.log('[Broker] WebSocket broker initialized with PATH Q-Z modules + Playwright orchestration');
+  }
+
+  /**
+   * Handle Playwright orchestrator events
+   */
+  private handleOrchestratorEvent(event: OrchestratorEvent): void {
+    switch (event.kind) {
+      case 'connected':
+        console.log('[Broker] Playwright connected to browser');
+        this.broadcast({
+          kind: 'ehr_connected',
+          connection: event.connection,
+          timestamp: Date.now()
+        });
+        break;
+
+      case 'disconnected':
+        console.log('[Broker] Playwright disconnected:', event.reason);
+        this.broadcast({
+          kind: 'ehr_disconnected',
+          reason: event.reason,
+          timestamp: Date.now()
+        });
+        break;
+
+      case 'page-changed':
+        console.log('[Broker] EHR page changed:', event.page.url);
+        this.broadcast({
+          kind: 'ehr_page_changed',
+          page: event.page,
+          timestamp: Date.now()
+        });
+        break;
+
+      case 'fields-detected':
+        console.log(`[Broker] Detected ${event.fields.length} EHR fields`);
+        this.broadcast({
+          kind: 'ehr_fields_detected',
+          fields: event.fields,
+          timestamp: Date.now()
+        });
+        break;
+
+      case 'field-filled':
+        console.log('[Broker] Field filled:', event.result.fieldId, event.result.success);
+        this.broadcast({
+          kind: 'ehr_field_filled',
+          result: event.result,
+          timestamp: Date.now()
+        });
+        break;
+
+      case 'patient-extracted':
+        console.log('[Broker] Patient context extracted:', event.context.name);
+        this.broadcast({
+          kind: 'ehr_patient_extracted',
+          patient: event.context,
+          timestamp: Date.now()
+        });
+        break;
+
+      case 'error':
+        console.error('[Broker] Orchestrator error:', event.message);
+        this.broadcast({
+          kind: 'ehr_error',
+          error: event.message,
+          details: event.details,
+          timestamp: Date.now()
+        });
+        break;
+    }
   }
 
   /**
@@ -304,6 +399,35 @@ export class WebSocketBroker {
       case 'dom_map_result':
         // PATH J: Feed DOM map to autopilot
         this.autopilot.ingestDOMMap(message.fields || []);
+        break;
+
+      // Playwright orchestration commands
+      case 'ehr_connect':
+        await this.handleEhrConnect(session, message);
+        break;
+
+      case 'ehr_disconnect':
+        await this.handleEhrDisconnect(session);
+        break;
+
+      case 'ehr_scan':
+        await this.handleEhrScan(session);
+        break;
+
+      case 'ehr_fill':
+        await this.handleEhrFill(session, message);
+        break;
+
+      case 'ehr_undo':
+        await this.handleEhrUndo(session, message);
+        break;
+
+      case 'ehr_map_field':
+        await this.handleEhrMapField(session, message);
+        break;
+
+      case 'ehr_read_patient':
+        await this.handleEhrReadPatient(session);
         break;
 
       case 'ping':
@@ -685,5 +809,193 @@ export class WebSocketBroker {
    */
   getSessionCount(): number {
     return this.sessions.size;
+  }
+
+  // ============================================
+  // EHR Orchestration Handlers
+  // ============================================
+
+  /**
+   * Connect to EHR browser via CDP WebSocket endpoint
+   */
+  private async handleEhrConnect(session: Session, message: any): Promise<void> {
+    const { ws } = session;
+    const wsEndpoint = message.wsEndpoint;
+
+    if (!wsEndpoint) {
+      this.send(ws, { kind: 'error', error: 'wsEndpoint is required' });
+      return;
+    }
+
+    try {
+      console.log(`[Broker] Connecting to EHR browser: ${wsEndpoint}`);
+      await this.orchestrator.connect(wsEndpoint);
+      this.send(ws, {
+        kind: 'ehr_connect_success',
+        state: this.orchestrator.getState(),
+        timestamp: Date.now()
+      });
+    } catch (error: any) {
+      console.error('[Broker] EHR connect failed:', error);
+      this.send(ws, { kind: 'error', error: `EHR connect failed: ${error.message}` });
+    }
+  }
+
+  /**
+   * Disconnect from EHR browser
+   */
+  private async handleEhrDisconnect(session: Session): Promise<void> {
+    const { ws } = session;
+
+    try {
+      await this.orchestrator.disconnect();
+      this.send(ws, {
+        kind: 'ehr_disconnect_success',
+        timestamp: Date.now()
+      });
+    } catch (error: any) {
+      this.send(ws, { kind: 'error', error: `EHR disconnect failed: ${error.message}` });
+    }
+  }
+
+  /**
+   * Scan EHR page for fields and patient context
+   */
+  private async handleEhrScan(session: Session): Promise<void> {
+    const { ws } = session;
+
+    if (!this.orchestrator.isConnected()) {
+      this.send(ws, { kind: 'error', error: 'Not connected to EHR browser' });
+      return;
+    }
+
+    try {
+      console.log('[Broker] Scanning EHR page...');
+      const snapshot = await this.orchestrator.scanPage();
+      this.send(ws, {
+        kind: 'ehr_scan_complete',
+        snapshot,
+        timestamp: Date.now()
+      });
+    } catch (error: any) {
+      this.send(ws, { kind: 'error', error: `EHR scan failed: ${error.message}` });
+    }
+  }
+
+  /**
+   * Fill EHR field(s) with transcript data
+   */
+  private async handleEhrFill(session: Session, message: any): Promise<void> {
+    const { ws } = session;
+
+    if (!this.orchestrator.isConnected()) {
+      this.send(ws, { kind: 'error', error: 'Not connected to EHR browser' });
+      return;
+    }
+
+    try {
+      // Single field fill
+      if (message.request) {
+        const result = await this.orchestrator.fillField(message.request);
+        this.send(ws, {
+          kind: 'ehr_fill_result',
+          result,
+          timestamp: Date.now()
+        });
+      }
+      // Batch fill
+      else if (message.requests) {
+        const batch = await this.orchestrator.fillBatch(message.requests);
+        this.send(ws, {
+          kind: 'ehr_batch_result',
+          batch,
+          timestamp: Date.now()
+        });
+      }
+      // Fill from transcript sources
+      else if (message.transcriptData) {
+        const batch = await this.orchestrator.fillFromTranscript(message.transcriptData);
+        this.send(ws, {
+          kind: 'ehr_batch_result',
+          batch,
+          timestamp: Date.now()
+        });
+      }
+      else {
+        this.send(ws, { kind: 'error', error: 'Missing request, requests, or transcriptData' });
+      }
+    } catch (error: any) {
+      this.send(ws, { kind: 'error', error: `EHR fill failed: ${error.message}` });
+    }
+  }
+
+  /**
+   * Undo last EHR fill operation
+   */
+  private async handleEhrUndo(session: Session, message: any): Promise<void> {
+    const { ws } = session;
+
+    if (!this.orchestrator.isConnected()) {
+      this.send(ws, { kind: 'error', error: 'Not connected to EHR browser' });
+      return;
+    }
+
+    try {
+      const result = await this.orchestrator.undoFill(message.fieldId);
+      this.send(ws, {
+        kind: 'ehr_undo_result',
+        result,
+        timestamp: Date.now()
+      });
+    } catch (error: any) {
+      this.send(ws, { kind: 'error', error: `EHR undo failed: ${error.message}` });
+    }
+  }
+
+  /**
+   * Map an EHR field to a transcript source
+   */
+  private async handleEhrMapField(session: Session, message: any): Promise<void> {
+    const { ws } = session;
+
+    const { fieldId, source } = message;
+    if (!fieldId || !source) {
+      this.send(ws, { kind: 'error', error: 'fieldId and source are required' });
+      return;
+    }
+
+    try {
+      const mapping = await this.orchestrator.mapField(fieldId, source);
+      this.send(ws, {
+        kind: 'ehr_mapping_created',
+        mapping,
+        timestamp: Date.now()
+      });
+    } catch (error: any) {
+      this.send(ws, { kind: 'error', error: `EHR map failed: ${error.message}` });
+    }
+  }
+
+  /**
+   * Read patient context from EHR page
+   */
+  private async handleEhrReadPatient(session: Session): Promise<void> {
+    const { ws } = session;
+
+    if (!this.orchestrator.isConnected()) {
+      this.send(ws, { kind: 'error', error: 'Not connected to EHR browser' });
+      return;
+    }
+
+    try {
+      const context = await this.orchestrator.readPatientContext();
+      this.send(ws, {
+        kind: 'ehr_patient_context',
+        context,
+        timestamp: Date.now()
+      });
+    } catch (error: any) {
+      this.send(ws, { kind: 'error', error: `EHR read patient failed: ${error.message}` });
+    }
   }
 }
