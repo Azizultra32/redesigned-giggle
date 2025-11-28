@@ -168,7 +168,7 @@ export class WsBridge {
   /**
    * Broadcast a message to all connected clients
    */
-  private broadcast(message: WsMessage): void {
+  public broadcast(message: WsMessage): void {
     const data = JSON.stringify(message);
     for (const client of this.clients) {
       if (client.readyState === WebSocket.OPEN) {

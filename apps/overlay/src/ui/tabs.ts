@@ -2,12 +2,10 @@
  * Tabs Component
  *
  * Tab navigation for switching between overlay panels:
- * - Transcript view
- * - Field mapping
- * - Settings
+ * - Summary, SOAP, Transcript, Tasks, Patient, Debug
  */
 
-export type TabId = 'transcript' | 'mapping' | 'settings';
+export type TabId = 'summary' | 'soap' | 'transcript' | 'tasks' | 'patient' | 'debug';
 
 interface Tab {
   id: TabId;
@@ -16,9 +14,12 @@ interface Tab {
 }
 
 const TABS: Tab[] = [
+  { id: 'summary', label: 'Summary', icon: '📋' },
+  { id: 'soap', label: 'SOAP', icon: '📄' },
   { id: 'transcript', label: 'Transcript', icon: '📝' },
-  { id: 'mapping', label: 'Mapping', icon: '🎯' },
-  { id: 'settings', label: 'Settings', icon: '⚙️' }
+  { id: 'tasks', label: 'Tasks', icon: '✅' },
+  { id: 'patient', label: 'Patient', icon: '👤' },
+  { id: 'debug', label: 'Debug', icon: '🔧' }
 ];
 
 export class TabsComponent {

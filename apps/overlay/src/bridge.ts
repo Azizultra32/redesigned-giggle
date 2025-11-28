@@ -20,7 +20,15 @@ export type BridgeEventType =
   | 'fields-changed'
   | 'get-patient-info'
   | 'server-error'
-  | 'toggle-overlay';
+  | 'toggle-overlay'
+  | 'hello'
+  | 'hello_ack'
+  | 'bind_audio'
+  | 'audio_bound'
+  | 'autopilot'
+  | 'feed_status'
+  | 'command'
+  | 'command_result';
 
 type EventCallback<T = unknown> = (data: T) => void | Promise<void>;
 

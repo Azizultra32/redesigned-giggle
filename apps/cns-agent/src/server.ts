@@ -118,7 +118,7 @@ app.post('/dom', async (req: Request, res: Response) => {
 
     // TODO: Lookup real patient UUID from EMR based on MRN
     // For now, generate a mock patient UUID
-    const patientUuid = `patient-${domMap.mrn || 'unknown'}`;
+    const patientUuid = `patient-${domMap.patientHint?.mrn || 'unknown'}`;
 
     await updatePatientInfo(transcriptId, patientUuid, domMap);
 
@@ -526,7 +526,7 @@ async function handleCommand2(session: Session, message: any): Promise<void> {
       chunks: session.pendingChunks.map(c => ({
         speaker: c.speaker || 0,
         text: c.text,
-        timestamp: c.timestamp
+        timestamp: c.timestamp ?? Date.now()
       }))
     });
   }

@@ -38,6 +38,7 @@ export interface TranscriptChunk {
   end: number;
   word_count: number;
   raw: WordResult[];
+  timestamp?: number;
 }
 
 // ============================================================================
@@ -98,7 +99,13 @@ export interface CommandMessage {
   };
 }
 
-export type WsMessage = StatusMessage | TranscriptMessage | AlertMessage | CommandMessage;
+export interface ActiveTabChangedMessage {
+  type: 'active_tab_changed';
+  tabId: string | null;
+  timestamp: number;
+}
+
+export type WsMessage = StatusMessage | TranscriptMessage | AlertMessage | CommandMessage | ActiveTabChangedMessage;
 
 // ============================================================================
 // Supabase Schema (transcripts2 table)
